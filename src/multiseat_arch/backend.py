@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import os
 import pwd
@@ -13,12 +12,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .discovery import connector_lease_name, discover_inputs
-from .model import Config, DeviceRule, InputDevice
+from .model import Config, DeviceRule, InputDevice, Seat
 
 ACTIVATE_UNIT = "msa-activate.service"
 RESTORE_UNIT = "msa-restore.service"
 HOTPLUG_UNIT = "msa-hotplug.service"
-UNIT_PREFIXES = ("msa-seat-", "msa-app-", "msa-input-", "msa-dlm-", "msa-hotplug")
+UNIT_PREFIXES = (
+    "msa-seat-",
+    "msa-app-",
+    "msa-input-",
+    "msa-dlm-",
+    "msa-hotplug",
+)
 LEGACY_UNIT_PREFIXES = ("multiseat-card", "dlm-card")
 READY_DIR = Path("/run/multi-seat-arch/input")
 
@@ -77,6 +82,8 @@ def doctor(config: Config | None = None) -> list[Check]:
         Check(command_exists("systemd-run"), "systemd-run"),
         Check(command_exists("loginctl"), "systemd-logind/loginctl"),
         Check(command_exists("udevadm"), "udevadm"),
+        Check(command_exists("localectl"), "localectl"),
+        Check(command_exists("journalctl"), "journalctl"),
         Check(command_exists("ldd"), "ldd"),
     ]
 
@@ -88,7 +95,9 @@ def doctor(config: Config | None = None) -> list[Check]:
             ]
         )
 
-    dlm = _resolve_binary("drm-lease-manager", "/usr/local/bin/drm-lease-manager")
+    dlm = _resolve_binary(
+        "drm-lease-manager", "/usr/local/bin/drm-lease-manager"
+    )
     checks.append(Check(dlm is not None, "drm-lease-manager"))
     if dlm:
         missing = _ldd_missing(dlm)
@@ -102,7 +111,11 @@ def doctor(config: Config | None = None) -> list[Check]:
         )
 
     comp = config.compositor if config else "/usr/local/bin/labwc"
-    comp_path = str(Path(comp)) if Path(comp).is_file() else _resolve_binary(Path(comp).name)
+    comp_path = (
+        str(Path(comp))
+        if Path(comp).is_file()
+        else _resolve_binary(Path(comp).name)
+    )
     checks.append(Check(comp_path is not None, f"compositor: {comp}"))
     if comp_path:
         missing = _ldd_missing(comp_path)
@@ -134,8 +147,19 @@ def doctor(config: Config | None = None) -> list[Check]:
     return checks
 
 
-def active_seats(config: Config):
+def active_seats(config: Config) -> list[Seat]:
     return [seat for seat in config.seats if seat.enabled]
+
+
+def _seat_has_configured_input(config: Config, seat: Seat) -> bool:
+    if seat.inputs:
+        return True
+    if any(rule.mode == "shared" for rule in config.devices):
+        return True
+    return any(
+        rule.mode == "seat" and rule.seat == seat.name
+        for rule in config.devices
+    )
 
 
 def validate(config: Config) -> list[str]:
@@ -167,7 +191,9 @@ def validate(config: Config) -> list[str]:
         except ValueError as exc:
             errors.append(str(exc))
         if seat.connector in connectors:
-            errors.append(f"Conector usado por mais de um seat: {seat.connector}")
+            errors.append(
+                f"Conector usado por mais de um seat: {seat.connector}"
+            )
         connectors.add(seat.connector)
 
         connector_path = Path("/sys/class/drm") / seat.connector
@@ -175,7 +201,9 @@ def validate(config: Config) -> list[str]:
             errors.append(f"Conector não encontrado: {seat.connector}")
         else:
             try:
-                status = (connector_path / "status").read_text(encoding="utf-8").strip()
+                status = (connector_path / "status").read_text(
+                    encoding="utf-8"
+                ).strip()
             except OSError:
                 status = ""
             if status and status != "connected":
@@ -184,7 +212,9 @@ def validate(config: Config) -> list[str]:
         try:
             user = pwd.getpwnam(seat.user)
             if user.pw_uid < 1000:
-                errors.append(f"Usuário de sistema/root não pode ser usado no seat: {seat.user}")
+                errors.append(
+                    f"Usuário de sistema/root não pode ser usado no seat: {seat.user}"
+                )
         except KeyError:
             errors.append(f"Usuário inexistente: {seat.user}")
         if seat.user in users:
@@ -201,20 +231,41 @@ def validate(config: Config) -> list[str]:
     keys: set[str] = set()
     for rule in config.devices:
         if not rule.key or not re.fullmatch(r"input-[a-f0-9]{24}", rule.key):
-            errors.append(f"Chave de periférico inválida: {rule.key or '<vazia>'}")
+            errors.append(
+                f"Chave de periférico inválida: {rule.key or '<vazia>'}"
+            )
         if rule.key in keys:
             errors.append(f"Regra duplicada de periférico: {rule.key}")
         keys.add(rule.key)
         if rule.mode == "seat":
             if not rule.seat:
-                errors.append(f"Periférico {rule.name or rule.key} não tem seat definido.")
+                errors.append(
+                    f"Periférico {rule.name or rule.key} não tem seat definido."
+                )
             elif rule.seat not in all_names:
-                errors.append(f"Seat inexistente na regra de {rule.name or rule.key}: {rule.seat}")
-            elif not next(seat for seat in config.seats if seat.name == rule.seat).enabled:
-                errors.append(f"Periférico {rule.name or rule.key} aponta para seat desabilitado.")
+                errors.append(
+                    f"Seat inexistente na regra de {rule.name or rule.key}: "
+                    f"{rule.seat}"
+                )
+            else:
+                target = next(
+                    seat for seat in config.seats if seat.name == rule.seat
+                )
+                if not target.enabled:
+                    errors.append(
+                        f"Periférico {rule.name or rule.key} aponta para seat "
+                        "desabilitado."
+                    )
         elif rule.seat:
             errors.append(
-                f"Regra {rule.name or rule.key} em modo {rule.mode} não deve definir seat."
+                f"Regra {rule.name or rule.key} em modo {rule.mode} não deve "
+                "definir seat."
+            )
+
+    for seat in seats:
+        if not _seat_has_configured_input(config, seat):
+            errors.append(
+                f"{seat.name} não possui nenhum input atribuído ou compartilhado."
             )
 
     comp_path = Path(config.compositor)
@@ -241,7 +292,9 @@ def _udev_seat(syspath: str) -> str:
     return "seat0"
 
 
-def _wait_assignments(assignments: list[tuple[str, str]], timeout: float = 5.0) -> None:
+def _wait_assignments(
+    assignments: list[tuple[str, str]], timeout: float = 5.0
+) -> None:
     deadline = time.monotonic() + timeout
     pending = set(assignments)
     while pending and time.monotonic() < deadline:
@@ -253,7 +306,9 @@ def _wait_assignments(assignments: list[tuple[str, str]], timeout: float = 5.0) 
         if pending:
             time.sleep(0.1)
     if pending:
-        detail = ", ".join(f"{path} -> {seat}" for seat, path in sorted(pending))
+        detail = ", ".join(
+            f"{path} -> {seat}" for seat, path in sorted(pending)
+        )
         raise RuntimeError("Falha ao atribuir inputs: " + detail)
 
 
@@ -286,8 +341,12 @@ def stop_transient_units(
     include_legacy: bool = True,
 ) -> None:
     exclude = exclude or set()
-    prefixes = UNIT_PREFIXES + (LEGACY_UNIT_PREFIXES if include_legacy else ())
-    units = [unit for unit in _list_units(prefixes) if unit not in exclude]
+    prefixes = UNIT_PREFIXES + (
+        LEGACY_UNIT_PREFIXES if include_legacy else ()
+    )
+    units = [
+        unit for unit in _list_units(prefixes) if unit not in exclude
+    ]
     units.sort(key=lambda unit: unit.startswith("msa-dlm-"))
     for unit in units:
         _run(["systemctl", "stop", unit], check=False)
@@ -325,6 +384,39 @@ def _ready_file(key: str) -> Path:
     return READY_DIR / f"{key}.json"
 
 
+def _unit_active(unit: str) -> bool:
+    return (
+        _run(
+            ["systemctl", "is-active", "--quiet", unit], check=False
+        ).returncode
+        == 0
+    )
+
+
+def _unit_failed(unit: str) -> bool:
+    return (
+        _run(
+            ["systemctl", "is-failed", "--quiet", unit], check=False
+        ).returncode
+        == 0
+    )
+
+
+def _unit_log_tail(unit: str, lines: int = 30) -> str:
+    return _run(
+        [
+            "journalctl",
+            "-u",
+            unit,
+            "-b",
+            "--no-pager",
+            "-n",
+            str(lines),
+        ],
+        check=False,
+    ).stdout.strip()
+
+
 def _wait_proxy(key: str, unit: str, timeout: float = 6.0) -> None:
     ready = _ready_file(key)
     deadline = time.monotonic() + timeout
@@ -334,13 +426,16 @@ def _wait_proxy(key: str, unit: str, timeout: float = 6.0) -> None:
         if _unit_failed(f"{unit}.service"):
             log = _unit_log_tail(f"{unit}.service")
             raise RuntimeError(
-                f"Proxy de input falhou para {key}." + (f"\n{log}" if log else "")
+                f"Proxy de input falhou para {key}."
+                + (f"\n{log}" if log else "")
             )
         time.sleep(0.1)
     raise RuntimeError(f"Proxy de input não ficou pronto: {key}")
 
 
-def _start_proxy(device: InputDevice, rule: DeviceRule, config: Config) -> None:
+def _start_proxy(
+    device: InputDevice, rule: DeviceRule, config: Config
+) -> None:
     unit = _proxy_unit(rule.key)
     ready = _ready_file(rule.key)
     ready.parent.mkdir(parents=True, exist_ok=True)
@@ -373,8 +468,12 @@ def _start_proxy(device: InputDevice, rule: DeviceRule, config: Config) -> None:
     _wait_proxy(rule.key, unit)
 
 
-def resolve_device_rules(config: Config) -> list[tuple[DeviceRule, InputDevice]]:
-    by_key = {device.key: device for device in discover_inputs() if device.key}
+def resolve_device_rules(
+    config: Config,
+) -> list[tuple[DeviceRule, InputDevice]]:
+    by_key = {
+        device.key: device for device in discover_inputs() if device.key
+    }
     return [
         (rule, by_key[rule.key])
         for rule in config.devices
@@ -383,7 +482,7 @@ def resolve_device_rules(config: Config) -> list[tuple[DeviceRule, InputDevice]]
 
 
 def sync_devices_now(config: Config) -> None:
-    """Apply peripheral routing without restarting the graphical seats."""
+    """Apply peripheral routing; caller serializes concurrent live changes."""
     if os.geteuid() != 0:
         raise PermissionError("Execute como root.")
     errors = validate(config)
@@ -418,10 +517,15 @@ def sync_devices_now(config: Config) -> None:
 
 
 def _lease_runtime_dirs() -> list[Path]:
-    return [Path("/var/local/run/drm-lease-manager"), Path("/var/run/drm-lease-manager")]
+    return [
+        Path("/var/local/run/drm-lease-manager"),
+        Path("/var/run/drm-lease-manager"),
+    ]
 
 
-def _wait_for_lease(lease: str, uid: int, timeout: float = 15.0) -> None:
+def _wait_for_lease(
+    lease: str, uid: int, timeout: float = 15.0
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for base in _lease_runtime_dirs():
@@ -432,25 +536,14 @@ def _wait_for_lease(lease: str, uid: int, timeout: float = 15.0) -> None:
                 os.chown(lock_path, uid, -1)
                 return
         time.sleep(0.15)
-    raise RuntimeError(f"DRM lease '{lease}' não apareceu em {timeout:.0f}s")
+    raise RuntimeError(
+        f"DRM lease '{lease}' não apareceu em {timeout:.0f}s"
+    )
 
 
-def _unit_active(unit: str) -> bool:
-    return _run(["systemctl", "is-active", "--quiet", unit], check=False).returncode == 0
-
-
-def _unit_failed(unit: str) -> bool:
-    return _run(["systemctl", "is-failed", "--quiet", unit], check=False).returncode == 0
-
-
-def _unit_log_tail(unit: str, lines: int = 30) -> str:
-    return _run(
-        ["journalctl", "-u", unit, "-b", "--no-pager", "-n", str(lines)],
-        check=False,
-    ).stdout.strip()
-
-
-def _wait_for_wayland(uid: int, unit: str, timeout: float = 12.0) -> str:
+def _wait_for_wayland(
+    uid: int, unit: str, timeout: float = 12.0
+) -> str:
     runtime = Path(f"/run/user/{uid}")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -458,16 +551,21 @@ def _wait_for_wayland(uid: int, unit: str, timeout: float = 12.0) -> str:
             path
             for path in sorted(runtime.glob("wayland-*"))
             if not path.name.endswith(".lock")
-            and path.exists()
+            and path.is_socket()
             and path.stat().st_uid == uid
         ]
         if sockets and _unit_active(unit):
             return sockets[0].name
         if _unit_failed(unit):
             log = _unit_log_tail(unit)
-            raise RuntimeError(f"Compositor falhou em {unit}." + (f"\n{log}" if log else ""))
+            raise RuntimeError(
+                f"Compositor falhou em {unit}."
+                + (f"\n{log}" if log else "")
+            )
         time.sleep(0.15)
-    raise RuntimeError(f"Compositor não criou socket Wayland em {timeout:.0f}s ({unit}).")
+    raise RuntimeError(
+        f"Compositor não criou socket Wayland em {timeout:.0f}s ({unit})."
+    )
 
 
 def _keyboard_layout() -> str:
@@ -480,11 +578,14 @@ def _keyboard_layout() -> str:
     return "us"
 
 
-def _start_user_apps(seat_name: str, uid: int, wayland_display: str) -> None:
+def _start_user_apps(
+    seat_name: str, uid: int, wayland_display: str
+) -> None:
     env = {
         "XDG_SESSION_TYPE": "wayland",
         "XDG_CURRENT_DESKTOP": "labwc",
         "XDG_RUNTIME_DIR": f"/run/user/{uid}",
+        "XDG_SEAT": seat_name,
         "WAYLAND_DISPLAY": wayland_display,
         "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus",
     }
@@ -501,16 +602,23 @@ def _start_user_apps(seat_name: str, uid: int, wayland_display: str) -> None:
             [binary, *app[1:]],
             uid=uid,
             env=env,
-            properties=[f"After=msa-seat-{seat_name}.service", f"PartOf=msa-seat-{seat_name}.service"],
+            properties=[
+                f"After=msa-seat-{seat_name}.service",
+                f"PartOf=msa-seat-{seat_name}.service",
+            ],
         )
 
 
-def _start_seat(config: Config, seat) -> None:
+def _start_seat(config: Config, seat: Seat) -> None:
     account = pwd.getpwnam(seat.user)
     uid = account.pw_uid
     _wait_for_lease(seat.connector, uid)
 
-    compositor = config.compositor if Path(config.compositor).is_file() else _resolve_binary(Path(config.compositor).name)
+    compositor = (
+        config.compositor
+        if Path(config.compositor).is_file()
+        else _resolve_binary(Path(config.compositor).name)
+    )
     if not compositor:
         raise RuntimeError(f"Compositor não encontrado: {config.compositor}")
 
@@ -518,10 +626,11 @@ def _start_seat(config: Config, seat) -> None:
         "XDG_SEAT": seat.name,
         "DRM_LEASE": seat.connector,
         "XDG_SESSION_TYPE": "wayland",
+        "XDG_RUNTIME_DIR": f"/run/user/{uid}",
         "SEATD_VTBOUND": "0",
         "XKB_DEFAULT_LAYOUT": _keyboard_layout(),
-        # Allows a seat to boot even if its Bluetooth/USB input is temporarily
-        # unplugged; logind/libinput can receive the device later via hotplug.
+        # Allow startup when a configured Bluetooth/USB input is temporarily
+        # disconnected. libinput keeps watching this seat for later hotplug.
         "WLR_LIBINPUT_NO_DEVICES": "1",
     }
     unit = f"msa-seat-{seat.name}"
@@ -544,7 +653,9 @@ def _start_seat(config: Config, seat) -> None:
 def _helper_binary() -> str:
     binary = _resolve_binary("multi-seat-arch")
     if not binary:
-        raise RuntimeError("Executável multi-seat-arch não encontrado no PATH.")
+        raise RuntimeError(
+            "Executável multi-seat-arch não encontrado no PATH."
+        )
     return binary
 
 
@@ -553,39 +664,34 @@ def _start_hotplug_watcher() -> None:
     _systemd_run(
         HOTPLUG_UNIT.removesuffix(".service"),
         [_helper_binary(), "_watch-inputs"],
-        properties=["Restart=always", "RestartSec=2s", "IgnoreOnIsolate=yes"],
+        properties=[
+            "Restart=always",
+            "RestartSec=2s",
+            "IgnoreOnIsolate=yes",
+        ],
         no_block=True,
     )
 
 
-def watch_inputs(config_loader, interval: float = 1.5) -> None:
-    """Poll udev inventory and reapply rules when hardware/config changes."""
-    if os.geteuid() != 0:
-        raise PermissionError("Execute como root.")
-    last_fingerprint = ""
-    while True:
-        try:
-            config = config_loader()
-            inventory = sorted((d.key, d.event, d.syspath) for d in discover_inputs())
-            payload = repr((config.to_dict(), inventory)).encode("utf-8", "replace")
-            fingerprint = hashlib.sha256(payload).hexdigest()
-            if fingerprint != last_fingerprint:
-                sync_devices_now(config)
-                last_fingerprint = fingerprint
-        except Exception as exc:
-            print(f"hotplug: {exc}", file=sys.stderr, flush=True)
-        time.sleep(interval)
-
-
 def _rollback_after_failed_start() -> None:
-    stop_transient_units(exclude={ACTIVATE_UNIT, RESTORE_UNIT}, include_legacy=False)
+    stop_transient_units(
+        exclude={ACTIVATE_UNIT, RESTORE_UNIT}, include_legacy=False
+    )
     flush_inputs()
-    _run(["systemctl", "isolate", "graphical.target"], check=False, timeout=30)
+    _run(
+        ["systemctl", "isolate", "graphical.target"],
+        check=False,
+        timeout=30,
+    )
 
 
 def activate_now(config: Config) -> None:
     if os.geteuid() != 0:
         raise PermissionError("Execute como root.")
+    # If a previous restore helper is still around, this explicit activation
+    # supersedes it. CLI also performs this step before scheduling us.
+    _run(["systemctl", "stop", RESTORE_UNIT], check=False)
+
     errors = validate(config)
     if errors:
         raise RuntimeError("\n".join(errors))
@@ -594,16 +700,22 @@ def activate_now(config: Config) -> None:
         raise RuntimeError("Pré-validação falhou: " + ", ".join(missing))
 
     try:
-        stop_transient_units(exclude={ACTIVATE_UNIT, RESTORE_UNIT}, include_legacy=True)
+        stop_transient_units(
+            exclude={ACTIVATE_UNIT, RESTORE_UNIT}, include_legacy=True
+        )
         _run(["systemctl", "isolate", "multi-user.target"], timeout=30)
         time.sleep(0.4)
 
-        dlm = _resolve_binary("drm-lease-manager", "/usr/local/bin/drm-lease-manager")
+        dlm = _resolve_binary(
+            "drm-lease-manager", "/usr/local/bin/drm-lease-manager"
+        )
         if not dlm:
             raise RuntimeError("drm-lease-manager não encontrado.")
 
         seats = active_seats(config)
-        cards = sorted({seat.connector.split("-", 1)[0] for seat in seats})
+        cards = sorted(
+            {seat.connector.split("-", 1)[0] for seat in seats}
+        )
         for card in cards:
             _systemd_run(
                 f"msa-dlm-{card}",
@@ -645,9 +757,17 @@ def start(config: Config) -> None:
 def restore_now() -> None:
     if os.geteuid() != 0:
         raise PermissionError("Execute como root.")
-    stop_transient_units(exclude={ACTIVATE_UNIT, RESTORE_UNIT}, include_legacy=True)
+    # Recovery wins over activation even when called directly, outside the CLI.
+    _run(["systemctl", "stop", ACTIVATE_UNIT], check=False)
+    stop_transient_units(
+        exclude={RESTORE_UNIT}, include_legacy=True
+    )
     flush_inputs()
-    _run(["systemctl", "isolate", "graphical.target"], check=False, timeout=30)
+    _run(
+        ["systemctl", "isolate", "graphical.target"],
+        check=False,
+        timeout=30,
+    )
 
 
 def restore() -> None:
