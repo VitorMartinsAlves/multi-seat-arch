@@ -11,7 +11,6 @@ from .backend import (
     restore,
     restore_now,
     start,
-    sync_devices_now,
     validate,
     watch_inputs,
 )
@@ -20,6 +19,7 @@ from .discovery import (
     discover_displays,
     discover_inputs,
 )
+from .live import sync_live
 from .status import runtime_status
 
 
@@ -106,7 +106,7 @@ def main() -> int:
             return 0
 
         if args.cmd == "sync":
-            sync_devices_now(cfg.load())
+            sync_live(cfg.load())
             print("Periféricos sincronizados sem reiniciar os seats.")
             return 0
 
