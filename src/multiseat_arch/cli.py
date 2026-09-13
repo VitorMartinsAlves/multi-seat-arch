@@ -37,8 +37,9 @@ def _build_parser() -> argparse.ArgumentParser:
     validate_parser = sub.add_parser("validate")
     validate_parser.add_argument("config")
 
-    apply_parser = sub.add_parser("apply")
-    apply_parser.add_argument("config")
+    for name in ("apply", "apply-sync", "apply-start"):
+        apply_parser = sub.add_parser(name)
+        apply_parser.add_argument("config")
 
     sub.add_parser("start")
     sub.add_parser("sync")
@@ -55,6 +56,14 @@ def _installed_config_or_none():
         return cfg.load()
     except (OSError, ValueError, json.JSONDecodeError):
         return None
+
+
+def _load_validated(path: str):
+    config = cfg.load(path)
+    errors = validate(config)
+    if errors:
+        raise ValueError("\n".join(errors))
+    return config
 
 
 def main() -> int:
@@ -90,14 +99,17 @@ def main() -> int:
             print("OK" if not errors else "\n".join(errors))
             return 0 if not errors else 2
 
-        if args.cmd == "apply":
-            config = cfg.load(args.config)
-            errors = validate(config)
-            if errors:
-                print("\n".join(errors), file=sys.stderr)
-                return 2
+        if args.cmd in {"apply", "apply-sync", "apply-start"}:
+            config = _load_validated(args.config)
             cfg.save(config)
-            print("Configuração instalada.")
+            if args.cmd == "apply-sync":
+                sync_live(config)
+                print("Configuração salva e periféricos sincronizados.")
+            elif args.cmd == "apply-start":
+                start(config)
+                print("Configuração salva e inicialização agendada.")
+            else:
+                print("Configuração instalada.")
             return 0
 
         if args.cmd == "start":
