@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QApplication, QComboBox, QHBoxLayout, QLabel, QListW
 
 from .discovery import discover_displays, discover_inputs
 from .model import Config, Seat
+from .backend import doctor, validate as validate_backend
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -84,7 +85,12 @@ class MainWindow(QMainWindow):
         if c.seats[0].connector == c.seats[1].connector: errors.append("Cada seat precisa de um monitor diferente.")
         if not c.seats[0].inputs or not c.seats[1].inputs: errors.append("Cada seat precisa de pelo menos um dispositivo de entrada.")
         if set(c.seats[0].inputs) & set(c.seats[1].inputs): errors.append("Um periférico não pode pertencer aos dois seats.")
-        QMessageBox.information(self, "Validação", "Configuração visual OK." if not errors else "\n".join(errors))
+        if c.seats[0].user == c.seats[1].user: errors.append("Selecione usuários diferentes para evitar conflito entre sessões Wayland.")
+        errors.extend(validate_backend(c))
+        missing = [x.message for x in doctor(c) if not x.ok]
+        if missing: errors.append("Dependências: " + ", ".join(missing))
+        errors = list(dict.fromkeys(errors))
+        QMessageBox.information(self, "Validação", "Configuração OK para iniciar." if not errors else "\n".join(errors))
         return not errors
 
     def _pkexec(self, *args: str):
