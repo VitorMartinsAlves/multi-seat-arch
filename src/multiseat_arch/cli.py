@@ -24,6 +24,7 @@ from .live import ensure_multiseat_running, sync_live
 from .operation import input_sync_lock
 from .status import runtime_status
 from .transitions import before_activation, before_restore
+from .users import create_seat_user
 
 
 def _slots_dict(obj):
@@ -43,6 +44,9 @@ def _build_parser() -> argparse.ArgumentParser:
     for name in ("apply", "apply-sync", "apply-start"):
         apply_parser = sub.add_parser(name)
         apply_parser.add_argument("config")
+
+    user_parser = sub.add_parser("create-user")
+    user_parser.add_argument("username")
 
     sub.add_parser("start")
     sub.add_parser("sync")
@@ -123,6 +127,11 @@ def main() -> int:
 
         if args.cmd == "status":
             print(json.dumps(runtime_status(), indent=2, ensure_ascii=False))
+            return 0
+
+        if args.cmd == "create-user":
+            create_seat_user(args.username)
+            print(f"Usuário '{args.username}' criado com home próprio.")
             return 0
 
         if args.cmd == "validate":
