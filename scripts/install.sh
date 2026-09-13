@@ -9,13 +9,32 @@ fi
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 sudo pacman -S --needed --noconfirm \
-  python python-pyqt6 python-pip qt6-wayland \
+  python python-pyqt6 python-pip python-evdev qt6-wayland \
   libinput systemd pciutils polkit pcmanfm-qt xfce4-terminal
+
+# Shared/disabled inputs are implemented with EVIOCGRAB + uinput clones.
+# Load it now and on future boots. This is reversible and does not change the
+# default systemd target.
+echo uinput | sudo tee /etc/modules-load.d/multi-seat-arch.conf >/dev/null
+sudo modprobe uinput
 
 if systemctl list-unit-files multiseat.service --no-legend 2>/dev/null \
   | grep -q '^multiseat\.service'; then
   echo "Desabilitando serviço legado multiseat.service..."
   sudo systemctl disable --now multiseat.service || true
+fi
+
+# garlett/multiseat used to edit systemd's vendor 71-seat.rules in place.
+# Undo only that exact mutation if it is present; do not overwrite the file.
+LEGACY_RULE=/usr/lib/udev/rules.d/71-seat.rules
+if [[ -f "$LEGACY_RULE" ]] \
+  && grep -Fq 'SUBSYSTEM=="input", KERNEL=="input*", TAG+="seat", TAG+="master-of-seat"' "$LEGACY_RULE"; then
+  echo "Revertendo alteração legada de 71-seat.rules..."
+  sudo sed -i \
+    's/SUBSYSTEM=="input", KERNEL=="input\*", TAG+="seat", TAG+="master-of-seat"/SUBSYSTEM=="input", KERNEL=="input*", TAG+="seat"/' \
+    "$LEGACY_RULE"
+  sudo udevadm control --reload
+  sudo udevadm trigger --subsystem-match=input || true
 fi
 
 if ! command -v drm-lease-manager >/dev/null 2>&1 \

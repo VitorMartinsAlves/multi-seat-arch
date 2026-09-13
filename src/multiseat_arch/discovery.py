@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import glob
+import hashlib
 import os
 import re
 import subprocess
@@ -49,6 +50,10 @@ def _kind_from_props(name: str, props: dict[str, str]) -> str:
         return "mouse"
     if props.get("ID_INPUT_KEYBOARD") == "1" or "keyboard" in low:
         return "keyboard"
+    if props.get("ID_INPUT_JOYSTICK") == "1" or any(
+        token in low for token in ("gamepad", "joystick", "controller")
+    ):
+        return "gamepad"
     return "other"
 
 
@@ -94,17 +99,53 @@ def _input_name(event: str, sys_class_input: str) -> str:
         return event_name
 
 
+def _physical_syspath(syspath: str) -> str:
+    return re.sub(r"/input/input\d+(?:/event\d+)?$", "", syspath)
+
+
+def _interface_identity(props: dict[str, str]) -> str:
+    interface = props.get("ID_USB_INTERFACE_NUM", "").strip()
+    if interface:
+        return interface
+    path = props.get("ID_PATH", "")
+    # Typical ID_PATH tail: ...usb-0:4.2:1.0 or ...usb-0:7.1:1.1-event-kbd.
+    matches = re.findall(r":(\d+\.\d+)(?=-|$)", path)
+    return matches[-1] if matches else ""
+
+
+def stable_device_key(
+    name: str,
+    kind: str,
+    syspath: str,
+    props: dict[str, str],
+) -> str:
+    """Build a persistent identity for one evdev function.
+
+    A hardware serial makes a peripheral follow USB port changes. The USB
+    interface number is retained so composite gaming keyboards/mice do not
+    collapse several evdev functions into one rule. Devices without a serial
+    deliberately fall back to their physical path/port.
+    """
+    serial = props.get("ID_SERIAL", "").strip()
+    path = (props.get("ID_PATH", "") or props.get("ID_PATH_TAG", "")).strip()
+    interface = _interface_identity(props)
+    if serial:
+        identity = f"serial:{serial}|interface:{interface or '-'}"
+    elif path:
+        identity = f"path:{path}"
+    else:
+        identity = f"sysfs:{_physical_syspath(syspath)}"
+
+    basis = f"{identity}|kind:{kind}|name:{name}"
+    digest = hashlib.sha256(basis.encode("utf-8", "replace")).hexdigest()[:24]
+    return f"input-{digest}"
+
+
 def discover_inputs(
     dev_input: str = "/dev/input",
     sys_class_input: str = "/sys/class/input",
 ) -> list[InputDevice]:
-    """Discover input event devices without relying on libinput's text output.
-
-    udev is the source of truth for the input class and seat assignment. Using
-    each event node's real sysfs path also handles i2c/serio devices such as
-    ELAN touchpads, which the original upstream script misclassified as PS/2.
-    """
-
+    """Discover real input devices using udev/sysfs as the source of truth."""
     result: list[InputDevice] = []
     seen: set[str] = set()
 
@@ -113,8 +154,12 @@ def discover_inputs(
             _run("udevadm", "info", "--query=property", "--name", event)
         )
         name = _input_name(event, sys_class_input)
-        kind = _kind_from_props(name, props)
+        # Do not feed the uinput clones created by input_proxy back into the
+        # inventory; otherwise hotplug sync would recursively clone its clones.
+        if name.startswith("MSA Shared "):
+            continue
 
+        kind = _kind_from_props(name, props)
         if kind == "other" and props.get("ID_INPUT") != "1":
             continue
 
@@ -139,14 +184,21 @@ def discover_inputs(
         result.append(
             InputDevice(
                 name=name,
-                kind=kind,
+                kind=kind,  # type: ignore[arg-type]
                 event=event,
                 syspath=syspath,
                 bus=props.get("ID_BUS", ""),
+                key=stable_device_key(name, kind, syspath, props),
+                seat=props.get("ID_SEAT", "seat0") or "seat0",
             )
         )
 
     return result
+
+
+def discover_bluetooth_controllers() -> list[str]:
+    """Return Bluetooth controllers; controllers remain global by design."""
+    return [Path(path).name for path in sorted(glob.glob("/sys/class/bluetooth/hci*"))]
 
 
 def connector_lease_name(connector: str) -> str:

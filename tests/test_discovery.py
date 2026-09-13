@@ -1,9 +1,11 @@
 import unittest
 
 from multiseat_arch.discovery import (
+    _kind_from_props,
     connector_lease_name,
     parse_libinput,
     parse_udev_properties,
+    stable_device_key,
 )
 
 
@@ -37,15 +39,58 @@ class DiscoveryTests(unittest.TestCase):
             },
         )
 
+    def test_stable_key_survives_event_and_usb_port_change_with_serial(self):
+        props_a = {
+            "ID_INPUT": "1",
+            "ID_INPUT_KEYBOARD": "1",
+            "ID_PATH": "pci-0000:00:14.0-usb-0:4.2:1.0",
+            "ID_SERIAL": "BY_Tech_Keyboard_ABC",
+        }
+        props_b = dict(props_a)
+        props_b["ID_PATH"] = "pci-0000:00:14.0-usb-0:7.1:1.0"
+        key_a = stable_device_key(
+            "Gaming Keyboard", "keyboard",
+            "/sys/devices/pci/usb/4-2/4-2:1.0/input/input3/event3", props_a,
+        )
+        key_b = stable_device_key(
+            "Gaming Keyboard", "keyboard",
+            "/sys/devices/pci/usb/7-1/7-1:1.0/input/input99/event99", props_b,
+        )
+        self.assertEqual(key_a, key_b)
+        self.assertRegex(key_a, r"^input-[a-f0-9]{24}$")
+
+    def test_composite_device_interfaces_do_not_collide(self):
+        common = {"ID_SERIAL": "Gaming_Device_ABC", "ID_INPUT_KEYBOARD": "1"}
+        first = stable_device_key(
+            "Gaming Keyboard", "keyboard", "/sys/devices/a",
+            {**common, "ID_USB_INTERFACE_NUM": "00"},
+        )
+        second = stable_device_key(
+            "Gaming Keyboard", "keyboard", "/sys/devices/b",
+            {**common, "ID_USB_INTERFACE_NUM": "01"},
+        )
+        self.assertNotEqual(first, second)
+
+    def test_devices_without_serial_remain_bound_to_physical_path(self):
+        key_a = stable_device_key(
+            "Cheap USB Mouse", "mouse", "/sys/devices/a/input/input1/event1",
+            {"ID_PATH": "usb-port-a"},
+        )
+        key_b = stable_device_key(
+            "Cheap USB Mouse", "mouse", "/sys/devices/b/input/input1/event1",
+            {"ID_PATH": "usb-port-b"},
+        )
+        self.assertNotEqual(key_a, key_b)
+
+    def test_gamepad_detection(self):
+        self.assertEqual(
+            _kind_from_props("Xbox Wireless Controller", {"ID_INPUT_JOYSTICK": "1"}),
+            "gamepad",
+        )
+
     def test_connector_validation(self):
-        self.assertEqual(
-            connector_lease_name("card1-HDMI-A-1"),
-            "card1-HDMI-A-1",
-        )
-        self.assertEqual(
-            connector_lease_name("card0-eDP-1"),
-            "card0-eDP-1",
-        )
+        self.assertEqual(connector_lease_name("card1-HDMI-A-1"), "card1-HDMI-A-1")
+        self.assertEqual(connector_lease_name("card0-eDP-1"), "card0-eDP-1")
         with self.assertRaises(ValueError):
             connector_lease_name("HDMI-A-1")
         with self.assertRaises(ValueError):

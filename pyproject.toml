@@ -4,17 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "multi-seat-arch"
-version = "0.2.0"
-description = "Visual single-GPU multiseat manager for Arch Linux/CachyOS"
+version = "0.3.0"
+description = "ASTER-like visual single-GPU multiseat manager for Arch Linux/CachyOS"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
 gui = ["PyQt6>=6.6"]
+input-proxy = ["evdev>=1.7"]
 
 [project.scripts]
 multi-seat-arch = "multiseat_arch.cli:main"
 multi-seat-arch-gui = "multiseat_arch.gui:main"
+multi-seat-arch-input-proxy = "multiseat_arch.input_proxy:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
