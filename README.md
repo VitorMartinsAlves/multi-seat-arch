@@ -38,7 +38,7 @@ O botão **Restaurar PC normal** para os seats, limpa as associações de `login
 ```bash
 git clone https://github.com/VitorMartinsAlves/multi-seat-arch.git
 cd multi-seat-arch
-./scripts/install.sh
+bash scripts/install.sh
 ```
 
 Dependências gráficas/runtime: `python`, `python-pyqt6`, `libinput`, `systemd`, `pciutils` e `polkit`.
