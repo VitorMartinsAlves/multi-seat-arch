@@ -1,4 +1,5 @@
 import unittest
+from contextlib import nullcontext
 from unittest.mock import patch
 
 from multiseat_arch import live
@@ -20,6 +21,7 @@ class LiveSyncTests(unittest.TestCase):
         config = Config()
         with (
             patch.object(live, "runtime_status", return_value={"running": True}),
+            patch.object(live, "input_sync_lock", return_value=nullcontext()),
             patch.object(live, "sync_devices_now") as sync,
         ):
             live.sync_live(config)
