@@ -19,7 +19,7 @@ pacman -S --needed --noconfirm \
   libunwind pixman cairo libjpeg-turbo libwebp libpng mesa pango \
   lcms2 mtdev libva colord pipewire freerdp neatvnc libxml2 glib2 \
   hwdata libdisplay-info libliftoff xorg-xwayland libxcb \
-  xcb-util-renderutil xcb-util-wm librsvg
+  xcb-util-renderutil xcb-util-wm librsvg libsfdo
 
 cat >/etc/ld.so.conf.d/multi-seat-arch.conf <<'EOF'
 /usr/local/lib
