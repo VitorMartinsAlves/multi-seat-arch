@@ -11,31 +11,15 @@ class ConfigTests(unittest.TestCase):
     def test_roundtrip_v2(self):
         value = Config(
             seats=[
-                Seat(
-                    "seat-a",
-                    "card1-HDMI-A-1",
-                    "vitor",
-                    enabled=True,
-                ),
-                Seat(
-                    "seat-b",
-                    "card1-eDP-1",
-                    "guest",
-                    enabled=False,
-                ),
+                Seat("seat-a", "card1-HDMI-A-1", "vitor", enabled=True),
+                Seat("seat-b", "card1-eDP-1", "guest", enabled=False),
             ],
             devices=[
                 DeviceRule(
-                    "input-111111111111111111111111",
-                    "seat",
-                    "seat-a",
-                    "Mouse",
+                    "input-111111111111111111111111", "seat", "seat-a", "Mouse"
                 ),
                 DeviceRule(
-                    "input-222222222222222222222222",
-                    "shared",
-                    "",
-                    "Keyboard",
+                    "input-222222222222222222222222", "shared", "", "Keyboard"
                 ),
             ],
         )
@@ -61,6 +45,26 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(migrated.version, 2)
         self.assertEqual(migrated.seats[0].inputs, ["/sys/devices/legacy"])
+
+    def test_rejects_unknown_top_level_fields(self):
+        with self.assertRaises(ValueError):
+            Config.from_dict({"version": 2, "seats": [], "exec": "oops"})
+
+    def test_rejects_non_boolean_enabled(self):
+        with self.assertRaises(ValueError):
+            Config.from_dict(
+                {
+                    "version": 2,
+                    "seats": [
+                        {
+                            "name": "seat-a",
+                            "connector": "card1-HDMI-A-1",
+                            "user": "vitor",
+                            "enabled": "false",
+                        }
+                    ],
+                }
+            )
 
     def test_rejects_unknown_seat_fields(self):
         with self.assertRaises(ValueError):
