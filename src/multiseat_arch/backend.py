@@ -35,14 +35,21 @@ def doctor(config: Config | None = None) -> list[Check]:
         Check(_resolve_binary("drm-lease-manager", "/usr/local/bin/drm-lease-manager") is not None, "drm-lease-manager"),
     ]
     comp = config.compositor if config else "/usr/local/bin/labwc"
-    checks.append(Check(Path(comp).exists() or command_exists(Path(comp).name), f"compositor: {comp}"))
+    comp_ok = Path(comp).exists() or command_exists(Path(comp).name)
+    checks.append(Check(comp_ok, f"compositor: {comp}"))
+    if comp_ok:
+        comp_path = str(Path(comp)) if Path(comp).exists() else shutil.which(Path(comp).name)
+        if comp_path:
+            ldd = subprocess.run(["ldd", comp_path], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False).stdout
+            missing = [line.strip() for line in ldd.splitlines() if "not found" in line]
+            checks.append(Check(not missing, "bibliotecas do compositor" if not missing else "bibliotecas ausentes: " + "; ".join(missing)))
     return checks
 
 
 def validate(config: Config) -> list[str]:
     errors: list[str] = []
     if len(config.seats) < 2: errors.append("São necessários pelo menos 2 seats.")
-    connectors: set[str] = set(); inputs: set[str] = set(); names: set[str] = set()
+    connectors: set[str] = set(); inputs: set[str] = set(); names: set[str] = set(); users: set[str] = set()
     for seat in config.seats:
         if not seat.name.startswith("seat-"): errors.append(f"Seat '{seat.name}' deve começar com 'seat-'.")
         if seat.name in names: errors.append(f"Seat duplicado: {seat.name}")
@@ -53,6 +60,8 @@ def validate(config: Config) -> list[str]:
         if not connector_path.exists(): errors.append(f"Conector não encontrado: {seat.connector}")
         try: pwd.getpwnam(seat.user)
         except KeyError: errors.append(f"Usuário inexistente: {seat.user}")
+        if seat.user in users: errors.append(f"Use usuários diferentes por seat para evitar conflito de XDG_RUNTIME_DIR: {seat.user}")
+        users.add(seat.user)
         if not seat.inputs: errors.append(f"{seat.name} não possui dispositivos de entrada.")
         for syspath in seat.inputs:
             if syspath in inputs: errors.append(f"Input atribuído a mais de um seat: {syspath}")
