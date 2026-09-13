@@ -11,15 +11,17 @@ from .backend import (
     restore,
     restore_now,
     start,
+    sync_devices_now,
     validate,
-    watch_inputs,
 )
 from .discovery import (
     discover_bluetooth_controllers,
     discover_displays,
     discover_inputs,
 )
-from .live import sync_live
+from .hotplug import watch_inputs
+from .live import ensure_multiseat_running, sync_live
+from .operation import input_sync_lock
 from .status import runtime_status
 
 
@@ -67,28 +69,31 @@ def _load_validated(path: str):
 
 
 def _apply_sync_transaction(config) -> None:
-    previous = _installed_config_or_none()
-    cfg.save(config)
-    try:
-        sync_live(config)
-    except Exception as original:
-        if previous is None:
-            raise RuntimeError(
-                f"Falha ao aplicar periféricos: {original}. Não havia configuração "
-                "anterior para rollback. Use 'multi-seat-arch restore' se necessário."
-            ) from original
-        cfg.save(previous)
+    ensure_multiseat_running()
+    with input_sync_lock():
+        ensure_multiseat_running()
+        previous = _installed_config_or_none()
+        cfg.save(config)
         try:
-            sync_live(previous)
-        except Exception as rollback_error:
+            sync_devices_now(config)
+        except Exception as original:
+            if previous is None:
+                raise RuntimeError(
+                    f"Falha ao aplicar periféricos: {original}. Não havia configuração "
+                    "anterior para rollback. Use 'multi-seat-arch restore' se necessário."
+                ) from original
+            cfg.save(previous)
+            try:
+                sync_devices_now(previous)
+            except Exception as rollback_error:
+                raise RuntimeError(
+                    f"Falha ao aplicar periféricos: {original}. O rollback também falhou: "
+                    f"{rollback_error}. Use 'multi-seat-arch restore'."
+                ) from original
             raise RuntimeError(
-                f"Falha ao aplicar periféricos: {original}. O rollback também falhou: "
-                f"{rollback_error}. Use 'multi-seat-arch restore'."
+                f"Falha ao aplicar periféricos: {original}. A configuração e as rotas "
+                "anteriores foram restauradas."
             ) from original
-        raise RuntimeError(
-            f"Falha ao aplicar periféricos: {original}. A configuração e as rotas "
-            "anteriores foram restauradas."
-        ) from original
 
 
 def main() -> int:
