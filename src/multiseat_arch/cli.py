@@ -66,6 +66,31 @@ def _load_validated(path: str):
     return config
 
 
+def _apply_sync_transaction(config) -> None:
+    previous = _installed_config_or_none()
+    cfg.save(config)
+    try:
+        sync_live(config)
+    except Exception as original:
+        if previous is None:
+            raise RuntimeError(
+                f"Falha ao aplicar periféricos: {original}. Não havia configuração "
+                "anterior para rollback. Use 'multi-seat-arch restore' se necessário."
+            ) from original
+        cfg.save(previous)
+        try:
+            sync_live(previous)
+        except Exception as rollback_error:
+            raise RuntimeError(
+                f"Falha ao aplicar periféricos: {original}. O rollback também falhou: "
+                f"{rollback_error}. Use 'multi-seat-arch restore'."
+            ) from original
+        raise RuntimeError(
+            f"Falha ao aplicar periféricos: {original}. A configuração e as rotas "
+            "anteriores foram restauradas."
+        ) from original
+
+
 def main() -> int:
     args = _build_parser().parse_args()
 
@@ -101,14 +126,15 @@ def main() -> int:
 
         if args.cmd in {"apply", "apply-sync", "apply-start"}:
             config = _load_validated(args.config)
-            cfg.save(config)
             if args.cmd == "apply-sync":
-                sync_live(config)
+                _apply_sync_transaction(config)
                 print("Configuração salva e periféricos sincronizados.")
             elif args.cmd == "apply-start":
+                cfg.save(config)
                 start(config)
                 print("Configuração salva e inicialização agendada.")
             else:
+                cfg.save(config)
                 print("Configuração instalada.")
             return 0
 
