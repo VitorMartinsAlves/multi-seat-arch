@@ -109,18 +109,22 @@ def stable_device_key(
     syspath: str,
     props: dict[str, str],
 ) -> str:
-    basis = "|".join(
-        part
-        for part in (
-            props.get("ID_SERIAL", ""),
-            props.get("ID_PATH", ""),
-            props.get("ID_PATH_TAG", ""),
-            _physical_syspath(syspath),
-            kind,
-            name,
-        )
-        if part
-    )
+    """Build a persistent identity for one evdev function.
+
+    Prefer a hardware serial so a peripheral keeps its assignment when moved
+    to another USB port. Devices without a trustworthy serial fall back to the
+    physical udev path, which deliberately binds the assignment to that port.
+    """
+    serial = props.get("ID_SERIAL", "").strip()
+    path = (props.get("ID_PATH", "") or props.get("ID_PATH_TAG", "")).strip()
+    if serial:
+        identity = f"serial:{serial}"
+    elif path:
+        identity = f"path:{path}"
+    else:
+        identity = f"sysfs:{_physical_syspath(syspath)}"
+
+    basis = f"{identity}|kind:{kind}|name:{name}"
     digest = hashlib.sha256(basis.encode("utf-8", "replace")).hexdigest()[:24]
     return f"input-{digest}"
 
