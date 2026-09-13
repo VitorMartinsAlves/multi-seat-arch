@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -152,9 +153,6 @@ class MainWindow(QMainWindow):
 
         self.live_button = QPushButton("Aplicar periféricos agora")
         self.live_button.clicked.connect(self.apply_devices_live)
-        self.live_button.setToolTip(
-            "Move/compartilha/desativa periféricos sem reiniciar os seats."
-        )
         top_actions.addWidget(self.live_button)
 
         bottom_actions = QHBoxLayout()
@@ -192,11 +190,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Monitor"))
         layout.addWidget(monitor)
         layout.addWidget(QLabel("Usuário"))
-        layout.addWidget(user)
+        user_row = QHBoxLayout()
+        user_row.addWidget(user, 1)
+        create_user = QPushButton("Criar usuário")
+        create_user.clicked.connect(lambda _checked=False, combo=user: self.create_user(combo))
+        user_row.addWidget(create_user)
+        layout.addLayout(user_row)
 
         hint = QLabel(
             "Escolha os periféricos na tabela abaixo. Desmarque Ativo para "
-            "desligar somente esta estação na próxima reinicialização do multiseat."
+            "desligar esta estação na próxima reinicialização do multiseat."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: palette(mid)")
@@ -204,6 +207,7 @@ class MainWindow(QMainWindow):
 
         enabled.toggled.connect(monitor.setEnabled)
         enabled.toggled.connect(user.setEnabled)
+        enabled.toggled.connect(create_user.setEnabled)
         return {
             "widget": widget,
             "name": seat_name,
@@ -219,6 +223,29 @@ class MainWindow(QMainWindow):
             if 1000 <= entry.pw_uid < 60000
             and entry.pw_shell not in {"/usr/bin/nologin", "/bin/false"}
         ]
+
+    def create_user(self, combo: QComboBox) -> None:
+        username, ok = QInputDialog.getText(
+            self,
+            "Criar usuário do seat",
+            "Nome do novo usuário (minúsculas, sem espaços):",
+        )
+        username = username.strip()
+        if not ok or not username:
+            return
+        if self._pkexec("create-user", username):
+            users = self._users()
+            for panel in (self.a, self.b):
+                selected = panel["user"].currentText()
+                panel["user"].clear()
+                panel["user"].addItems(users)
+                index = panel["user"].findText(selected)
+                if index >= 0:
+                    panel["user"].setCurrentIndex(index)
+            index = combo.findText(username)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+            self.status.setText(f"Usuário '{username}' criado.")
 
     def _load_saved_config(self) -> None:
         try:
@@ -242,10 +269,10 @@ class MainWindow(QMainWindow):
     def _populate_seat_selectors(self) -> None:
         users = self._users()
         for panel in (self.a, self.b):
-            current_connector = (
-                panel.get("saved_connector") or panel["monitor"].currentData()
-            )
-            current_user = panel.get("saved_user") or panel["user"].currentText()
+            saved_connector = panel.pop("saved_connector", None)
+            saved_user = panel.pop("saved_user", None)
+            current_connector = saved_connector or panel["monitor"].currentData()
+            current_user = saved_user or panel["user"].currentText()
 
             panel["monitor"].clear()
             for display in self.displays:
@@ -260,9 +287,10 @@ class MainWindow(QMainWindow):
             if index >= 0:
                 panel["user"].setCurrentIndex(index)
 
-        if len(self.displays) > 1:
-            if self.a["monitor"].currentData() == self.b["monitor"].currentData():
-                self.b["monitor"].setCurrentIndex(1)
+        if len(self.displays) > 1 and (
+            self.a["monitor"].currentData() == self.b["monitor"].currentData()
+        ):
+            self.b["monitor"].setCurrentIndex(1)
         if (
             len(users) > 1
             and self.a["user"].currentText() == self.b["user"].currentText()
@@ -599,9 +627,7 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         if self._apply_config_action("apply-start"):
-            self.status.setText(
-                "Configuração salva e inicialização agendada."
-            )
+            self.status.setText("Configuração salva e inicialização agendada.")
 
     def restore(self, _checked=False) -> None:
         answer = QMessageBox.question(
