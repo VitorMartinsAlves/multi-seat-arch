@@ -23,6 +23,7 @@ from .hotplug import watch_inputs
 from .live import ensure_multiseat_running, sync_live
 from .operation import input_sync_lock
 from .status import runtime_status
+from .transitions import before_activation, before_restore
 
 
 def _slots_dict(obj):
@@ -135,6 +136,7 @@ def main() -> int:
                 _apply_sync_transaction(config)
                 print("Configuração salva e periféricos sincronizados.")
             elif args.cmd == "apply-start":
+                before_activation()
                 cfg.save(config)
                 start(config)
                 print("Configuração salva e inicialização agendada.")
@@ -144,6 +146,7 @@ def main() -> int:
             return 0
 
         if args.cmd == "start":
+            before_activation()
             start(cfg.load())
             print("Inicialização agendada.")
             return 0
@@ -154,6 +157,7 @@ def main() -> int:
             return 0
 
         if args.cmd in {"stop", "restore"}:
+            before_restore()
             restore()
             print("Restauração agendada.")
             return 0
