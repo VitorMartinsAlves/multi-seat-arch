@@ -1,9 +1,11 @@
 import unittest
 
 from multiseat_arch.discovery import (
+    _kind_from_props,
     connector_lease_name,
     parse_libinput,
     parse_udev_properties,
+    stable_device_key,
 )
 
 
@@ -35,6 +37,34 @@ class DiscoveryTests(unittest.TestCase):
                 "ID_INPUT_TOUCHPAD": "1",
                 "ID_BUS": "i2c",
             },
+        )
+
+    def test_stable_key_survives_event_number_change(self):
+        props = {
+            "ID_INPUT": "1",
+            "ID_INPUT_KEYBOARD": "1",
+            "ID_PATH": "pci-0000:00:14.0-usb-0:4.2:1.0",
+            "ID_SERIAL": "BY_Tech_Keyboard_ABC",
+        }
+        key_a = stable_device_key(
+            "Gaming Keyboard",
+            "keyboard",
+            "/sys/devices/pci/usb/4-2/4-2:1.0/input/input3/event3",
+            props,
+        )
+        key_b = stable_device_key(
+            "Gaming Keyboard",
+            "keyboard",
+            "/sys/devices/pci/usb/4-2/4-2:1.0/input/input99/event99",
+            props,
+        )
+        self.assertEqual(key_a, key_b)
+        self.assertRegex(key_a, r"^input-[a-f0-9]{24}$")
+
+    def test_gamepad_detection(self):
+        self.assertEqual(
+            _kind_from_props("Xbox Wireless Controller", {"ID_INPUT_JOYSTICK": "1"}),
+            "gamepad",
         )
 
     def test_connector_validation(self):
