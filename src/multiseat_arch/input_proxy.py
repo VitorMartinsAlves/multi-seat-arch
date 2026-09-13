@@ -67,6 +67,23 @@ def _ready_path(path: str) -> Path:
     return ready
 
 
+def _clone(device: EvdevDevice, seat: str) -> UInput:
+    info = device.info
+    # input_props is important for touchpads (INPUT_PROP_POINTER/DIRECT/etc.).
+    # Without it a capability-identical clone may still be classified
+    # differently by libinput. Identity fields also help gamepads and HID quirks.
+    return UInput.from_device(
+        device,
+        name=f"MSA Shared {device.name} [{seat}]",
+        phys=f"multi-seat-arch/{seat}",
+        input_props=device.input_props(),
+        bustype=info.bustype,
+        vendor=info.vendor,
+        product=info.product,
+        version=info.version,
+    )
+
+
 def run_proxy(source: str, seats: list[str], ready_path: str) -> int:
     source_path = Path(source)
     if not source_path.exists():
@@ -87,17 +104,13 @@ def run_proxy(source: str, seats: list[str], ready_path: str) -> int:
     ready.unlink(missing_ok=True)
 
     try:
-        # EVIOCGRAB is what makes 'disabled' reliable and prevents the physical
-        # event node from also reaching seat0 while shared clones are active.
+        # EVIOCGRAB makes 'disabled' reliable and prevents the physical event
+        # node from also reaching seat0 while shared clones are active.
         device.grab()
 
         attached: dict[str, str] = {}
         for seat in seats:
-            ui = UInput.from_device(
-                device,
-                name=f"MSA Shared {device.name} [{seat}]",
-                phys=f"multi-seat-arch/{seat}",
-            )
+            ui = _clone(device, seat)
             outputs.append(ui)
             attached[seat] = _attach_virtual(ui, seat)
 
@@ -116,10 +129,9 @@ def run_proxy(source: str, seats: list[str], ready_path: str) -> int:
             encoding="utf-8",
         )
 
-        # read_loop blocks in read(); signal delivery interrupts it on Linux.
         while running:
             try:
-                events = device.read()
+                events = list(device.read())
             except BlockingIOError:
                 time.sleep(0.01)
                 continue
@@ -128,6 +140,9 @@ def run_proxy(source: str, seats: list[str], ready_path: str) -> int:
                     raise
                 break
 
+            if not events:
+                time.sleep(0.005)
+                continue
             for event in events:
                 if event.type == ecodes.EV_SYN:
                     if event.code == ecodes.SYN_REPORT:
@@ -136,8 +151,6 @@ def run_proxy(source: str, seats: list[str], ready_path: str) -> int:
                     continue
                 for ui in outputs:
                     ui.write(event.type, event.code, event.value)
-            if not events:
-                time.sleep(0.005)
         return 0
     finally:
         ready.unlink(missing_ok=True)
