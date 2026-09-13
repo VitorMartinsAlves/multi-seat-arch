@@ -28,11 +28,13 @@ def runtime_status() -> dict:
     leases: list[str] = []
     for line in proc.stdout.splitlines():
         unit = line.split(maxsplit=1)[0] if line.strip() else ""
-        if unit.startswith("msa-seat-") and unit.endswith(".service"):
+        if not unit or not unit.endswith(".service") or not _active(unit):
+            continue
+        if unit.startswith("msa-seat-"):
             seats.append(unit.removeprefix("msa-seat-").removesuffix(".service"))
-        elif unit.startswith("msa-input-") and unit.endswith(".service"):
+        elif unit.startswith("msa-input-"):
             proxies.append(unit.removeprefix("msa-input-").removesuffix(".service"))
-        elif unit.startswith("msa-dlm-") and unit.endswith(".service"):
+        elif unit.startswith("msa-dlm-"):
             leases.append(unit.removeprefix("msa-dlm-").removesuffix(".service"))
 
     return {
