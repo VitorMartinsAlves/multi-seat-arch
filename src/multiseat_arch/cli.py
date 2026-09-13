@@ -10,7 +10,6 @@ from .backend import (
     doctor,
     restore,
     restore_now,
-    runtime_status,
     start,
     sync_devices_now,
     validate,
@@ -21,6 +20,7 @@ from .discovery import (
     discover_displays,
     discover_inputs,
 )
+from .status import runtime_status
 
 
 def _slots_dict(obj):
