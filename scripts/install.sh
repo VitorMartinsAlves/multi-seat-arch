@@ -6,12 +6,15 @@ if [[ $EUID -eq 0 ]]; then
   exit 1
 fi
 
-sudo pacman -S --needed --noconfirm python python-pyqt6 libinput systemd pciutils polkit
-python -m pip install --user --break-system-packages .
+sudo pacman -S --needed --noconfirm python python-pyqt6 python-pip libinput systemd pciutils polkit
 
-BIN="$HOME/.local/bin"
+if ! command -v drm-lease-manager >/dev/null 2>&1 || [[ ! -x /usr/local/bin/labwc ]]; then
+  echo "Engine DRM lease não encontrada. Compilando componentes necessários..."
+  sudo bash scripts/build-engine.sh
+fi
+
+sudo python -m pip install --break-system-packages .
 sudo install -Dm644 desktop/multi-seat-arch.desktop /usr/share/applications/multi-seat-arch.desktop
-sudo sed -i "s|Exec=multi-seat-arch-gui|Exec=$BIN/multi-seat-arch-gui|" /usr/share/applications/multi-seat-arch.desktop
 
-echo "Instalado. Rode: $BIN/multi-seat-arch-gui"
-echo "Antes de iniciar seats, rode: $BIN/multi-seat-arch doctor"
+echo "Instalado. Abra 'Multi Seat Arch' no menu ou rode: multi-seat-arch-gui"
+multi-seat-arch doctor || true
