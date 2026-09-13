@@ -103,6 +103,16 @@ def _physical_syspath(syspath: str) -> str:
     return re.sub(r"/input/input\d+(?:/event\d+)?$", "", syspath)
 
 
+def _interface_identity(props: dict[str, str]) -> str:
+    interface = props.get("ID_USB_INTERFACE_NUM", "").strip()
+    if interface:
+        return interface
+    path = props.get("ID_PATH", "")
+    # Typical ID_PATH tail: ...usb-0:4.2:1.0 or ...usb-0:7.1:1.1-event-kbd.
+    matches = re.findall(r":(\d+\.\d+)(?=-|$)", path)
+    return matches[-1] if matches else ""
+
+
 def stable_device_key(
     name: str,
     kind: str,
@@ -111,14 +121,16 @@ def stable_device_key(
 ) -> str:
     """Build a persistent identity for one evdev function.
 
-    Prefer a hardware serial so a peripheral keeps its assignment when moved
-    to another USB port. Devices without a trustworthy serial fall back to the
-    physical udev path, which deliberately binds the assignment to that port.
+    A hardware serial makes a peripheral follow USB port changes. The USB
+    interface number is retained so composite gaming keyboards/mice do not
+    collapse several evdev functions into one rule. Devices without a serial
+    deliberately fall back to their physical path/port.
     """
     serial = props.get("ID_SERIAL", "").strip()
     path = (props.get("ID_PATH", "") or props.get("ID_PATH_TAG", "")).strip()
+    interface = _interface_identity(props)
     if serial:
-        identity = f"serial:{serial}"
+        identity = f"serial:{serial}|interface:{interface or '-'}"
     elif path:
         identity = f"path:{path}"
     else:
