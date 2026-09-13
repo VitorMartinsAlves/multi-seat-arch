@@ -59,10 +59,36 @@ class Config:
             "devices": [asdict(rule) for rule in self.devices],
         }
 
+    @staticmethod
+    def _string(raw: dict, key: str, default: str = "") -> str:
+        value = raw.get(key, default)
+        if not isinstance(value, str):
+            raise ValueError(f"'{key}' precisa ser uma string.")
+        return value
+
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
         if not isinstance(data, dict):
             raise ValueError("A configuração precisa ser um objeto JSON.")
+
+        unknown_top = set(data) - {"version", "compositor", "seats", "devices"}
+        if unknown_top:
+            raise ValueError(
+                "Campos desconhecidos na configuração: "
+                + ", ".join(sorted(unknown_top))
+            )
+
+        raw_version = data.get("version", 1)
+        if isinstance(raw_version, bool) or not isinstance(raw_version, int):
+            raise ValueError("'version' precisa ser um inteiro.")
+        if raw_version not in {1, 2}:
+            raise ValueError(
+                f"Versão de configuração não suportada: {raw_version}"
+            )
+
+        compositor = data.get("compositor", "/usr/local/bin/labwc")
+        if not isinstance(compositor, str):
+            raise ValueError("'compositor' precisa ser uma string.")
 
         raw_seats = data.get("seats", [])
         if not isinstance(raw_seats, list):
@@ -78,15 +104,20 @@ class Config:
                     "Campos desconhecidos no seat: " + ", ".join(sorted(unknown))
                 )
             inputs = raw.get("inputs", [])
-            if not isinstance(inputs, list) or not all(isinstance(item, str) for item in inputs):
+            if not isinstance(inputs, list) or not all(
+                isinstance(item, str) for item in inputs
+            ):
                 raise ValueError("'inputs' precisa ser uma lista de strings.")
+            enabled = raw.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise ValueError("'enabled' precisa ser booleano.")
             seats.append(
                 Seat(
-                    name=str(raw.get("name", "")),
-                    connector=str(raw.get("connector", "")),
-                    user=str(raw.get("user", "")),
+                    name=cls._string(raw, "name"),
+                    connector=cls._string(raw, "connector"),
+                    user=cls._string(raw, "user"),
                     inputs=inputs,
-                    enabled=bool(raw.get("enabled", True)),
+                    enabled=enabled,
                 )
             )
 
@@ -102,27 +133,23 @@ class Config:
                 raise ValueError(
                     "Campos desconhecidos em devices: " + ", ".join(sorted(unknown))
                 )
-            mode = str(raw.get("mode", "unmanaged"))
+            mode = cls._string(raw, "mode", "unmanaged")
             if mode not in {"seat", "shared", "disabled", "unmanaged"}:
                 raise ValueError(f"Modo de dispositivo inválido: {mode}")
             devices.append(
                 DeviceRule(
-                    key=str(raw.get("key", "")),
+                    key=cls._string(raw, "key"),
                     mode=mode,  # type: ignore[arg-type]
-                    seat=str(raw.get("seat", "")),
-                    name=str(raw.get("name", "")),
+                    seat=cls._string(raw, "seat"),
+                    name=cls._string(raw, "name"),
                 )
             )
 
-        version = int(data.get("version", 1))
-        # v1 migration: legacy syspaths stay on Seat.inputs. They are consumed by
-        # the backend until the GUI saves the configuration as v2.
-        if version not in {1, 2}:
-            raise ValueError(f"Versão de configuração não suportada: {version}")
-
+        # v1 migration: legacy syspaths remain in Seat.inputs and are consumed
+        # until the visual editor saves a native v2 device rule configuration.
         return cls(
             version=2,
-            compositor=str(data.get("compositor", "/usr/local/bin/labwc")),
+            compositor=compositor,
             seats=seats,
             devices=devices,
         )
