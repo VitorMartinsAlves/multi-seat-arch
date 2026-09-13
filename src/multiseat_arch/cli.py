@@ -10,10 +10,17 @@ from .backend import (
     doctor,
     restore,
     restore_now,
+    runtime_status,
     start,
+    sync_devices_now,
     validate,
+    watch_inputs,
 )
-from .discovery import discover_displays, discover_inputs
+from .discovery import (
+    discover_bluetooth_controllers,
+    discover_displays,
+    discover_inputs,
+)
 
 
 def _slots_dict(obj):
@@ -25,6 +32,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("discover")
     sub.add_parser("doctor")
+    sub.add_parser("status")
 
     validate_parser = sub.add_parser("validate")
     validate_parser.add_argument("config")
@@ -33,11 +41,20 @@ def _build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("config")
 
     sub.add_parser("start")
+    sub.add_parser("sync")
     sub.add_parser("stop")
     sub.add_parser("restore")
     sub.add_parser("_activate", help=argparse.SUPPRESS)
     sub.add_parser("_restore-now", help=argparse.SUPPRESS)
+    sub.add_parser("_watch-inputs", help=argparse.SUPPRESS)
     return parser
+
+
+def _installed_config_or_none():
+    try:
+        return cfg.load()
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def main() -> int:
@@ -48,12 +65,9 @@ def main() -> int:
             print(
                 json.dumps(
                     {
-                        "displays": [
-                            _slots_dict(item) for item in discover_displays()
-                        ],
-                        "inputs": [
-                            _slots_dict(item) for item in discover_inputs()
-                        ],
+                        "displays": [_slots_dict(item) for item in discover_displays()],
+                        "inputs": [_slots_dict(item) for item in discover_inputs()],
+                        "bluetooth_controllers": discover_bluetooth_controllers(),
                     },
                     indent=2,
                     ensure_ascii=False,
@@ -62,10 +76,14 @@ def main() -> int:
             return 0
 
         if args.cmd == "doctor":
-            checks = doctor()
+            checks = doctor(_installed_config_or_none())
             for check in checks:
                 print(("OK   " if check.ok else "FALHA"), check.message)
             return 0 if all(check.ok for check in checks) else 1
+
+        if args.cmd == "status":
+            print(json.dumps(runtime_status(), indent=2, ensure_ascii=False))
+            return 0
 
         if args.cmd == "validate":
             errors = validate(cfg.load(args.config))
@@ -87,6 +105,11 @@ def main() -> int:
             print("Inicialização agendada.")
             return 0
 
+        if args.cmd == "sync":
+            sync_devices_now(cfg.load())
+            print("Periféricos sincronizados sem reiniciar os seats.")
+            return 0
+
         if args.cmd in {"stop", "restore"}:
             restore()
             print("Restauração agendada.")
@@ -98,6 +121,10 @@ def main() -> int:
 
         if args.cmd == "_restore-now":
             restore_now()
+            return 0
+
+        if args.cmd == "_watch-inputs":
+            watch_inputs(cfg.load)
             return 0
 
         return 1
