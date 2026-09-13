@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import unittest
 from unittest.mock import patch
 
@@ -11,9 +12,15 @@ class CliTransactionTests(unittest.TestCase):
         new = Config(seats=[Seat("seat-a", "card1-HDMI-A-1", "alice")])
 
         with (
+            patch.object(cli, "ensure_multiseat_running"),
+            patch.object(cli, "input_sync_lock", return_value=nullcontext()),
             patch.object(cli, "_installed_config_or_none", return_value=previous),
             patch.object(cli.cfg, "save") as save,
-            patch.object(cli, "sync_live", side_effect=[RuntimeError("new failed"), None]) as sync,
+            patch.object(
+                cli,
+                "sync_devices_now",
+                side_effect=[RuntimeError("new failed"), None],
+            ) as sync,
         ):
             with self.assertRaisesRegex(RuntimeError, "foram restauradas"):
                 cli._apply_sync_transaction(new)
@@ -28,11 +35,13 @@ class CliTransactionTests(unittest.TestCase):
         new = Config(seats=[Seat("seat-a", "card1-HDMI-A-1", "alice")])
 
         with (
+            patch.object(cli, "ensure_multiseat_running"),
+            patch.object(cli, "input_sync_lock", return_value=nullcontext()),
             patch.object(cli, "_installed_config_or_none", return_value=previous),
             patch.object(cli.cfg, "save"),
             patch.object(
                 cli,
-                "sync_live",
+                "sync_devices_now",
                 side_effect=[RuntimeError("new failed"), RuntimeError("rollback failed")],
             ),
         ):
