@@ -66,7 +66,7 @@ class MainWindow(QMainWindow):
         self.status_timer.start(2500)
         self.refresh_runtime_status()
 
-    def _build(self):
+    def _build(self) -> None:
         root = QWidget()
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
@@ -80,9 +80,6 @@ class MainWindow(QMainWindow):
         title_row.addWidget(title)
         title_row.addStretch(1)
         self.runtime_badge = QLabel("Verificando…")
-        self.runtime_badge.setStyleSheet(
-            "padding: 6px 12px; border-radius: 10px; background: palette(midlight);"
-        )
         title_row.addWidget(self.runtime_badge)
 
         subtitle = QLabel(
@@ -116,7 +113,9 @@ class MainWindow(QMainWindow):
             ["Dispositivo", "Tipo", "Conexão", "Estado", "Destino"]
         )
         self.device_table.verticalHeader().setVisible(False)
-        self.device_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.device_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
         self.device_table.setAlternatingRowColors(True)
         self.device_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch
@@ -140,32 +139,38 @@ class MainWindow(QMainWindow):
         self.status.setWordWrap(True)
         outer.addWidget(self.status)
 
-        buttons_top = QHBoxLayout()
-        outer.addLayout(buttons_top)
-        for text, fn in [
+        top_actions = QHBoxLayout()
+        outer.addLayout(top_actions)
+        for text, fn in (
             ("Detectar hardware", self.refresh_all),
             ("Distribuir automaticamente", self.auto_assign),
             ("Salvar configuração", self.save_configuration),
-            ("Aplicar periféricos agora", self.apply_devices_live),
-        ]:
+        ):
             button = QPushButton(text)
             button.clicked.connect(fn)
-            buttons_top.addWidget(button)
+            top_actions.addWidget(button)
 
-        buttons_bottom = QHBoxLayout()
-        outer.addLayout(buttons_bottom)
+        self.live_button = QPushButton("Aplicar periféricos agora")
+        self.live_button.clicked.connect(self.apply_devices_live)
+        self.live_button.setToolTip(
+            "Move/compartilha/desativa periféricos sem reiniciar os seats."
+        )
+        top_actions.addWidget(self.live_button)
+
+        bottom_actions = QHBoxLayout()
+        outer.addLayout(bottom_actions)
         validate_button = QPushButton("Validar")
         validate_button.clicked.connect(self.validate_ui)
-        buttons_bottom.addWidget(validate_button)
+        bottom_actions.addWidget(validate_button)
 
         start_button = QPushButton("Aplicar e iniciar / reiniciar")
         start_button.clicked.connect(self.start)
         start_button.setStyleSheet("font-weight: 650; padding: 8px")
-        buttons_bottom.addWidget(start_button, 1)
+        bottom_actions.addWidget(start_button, 1)
 
         restore_button = QPushButton("Restaurar PC normal")
         restore_button.clicked.connect(self.restore)
-        buttons_bottom.addWidget(restore_button)
+        bottom_actions.addWidget(restore_button)
 
     def _seat_panel(self, title: str, seat_name: str) -> dict:
         widget = QFrame()
@@ -190,8 +195,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(user)
 
         hint = QLabel(
-            "Os periféricos deste seat são escolhidos na tabela abaixo. "
-            "Desmarque Ativo para desligar somente esta estação."
+            "Escolha os periféricos na tabela abaixo. Desmarque Ativo para "
+            "desligar somente esta estação na próxima reinicialização do multiseat."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: palette(mid)")
@@ -222,7 +227,13 @@ class MainWindow(QMainWindow):
             return
         self.rules = {rule.key: rule for rule in saved.devices}
         for seat in saved.seats:
-            panel = self.a if seat.name == "seat-a" else self.b if seat.name == "seat-b" else None
+            panel = (
+                self.a
+                if seat.name == "seat-a"
+                else self.b
+                if seat.name == "seat-b"
+                else None
+            )
             if panel:
                 panel["enabled"].setChecked(seat.enabled)
                 panel["saved_connector"] = seat.connector
@@ -231,16 +242,16 @@ class MainWindow(QMainWindow):
     def _populate_seat_selectors(self) -> None:
         users = self._users()
         for panel in (self.a, self.b):
-            current_connector = panel.get("saved_connector") or panel["monitor"].currentData()
+            current_connector = (
+                panel.get("saved_connector") or panel["monitor"].currentData()
+            )
             current_user = panel.get("saved_user") or panel["user"].currentText()
 
             panel["monitor"].clear()
             for display in self.displays:
                 panel["monitor"].addItem(display.connector, display.connector)
             if current_connector:
-                index = panel["monitor"].findData(current_connector)
-                if index >= 0:
-                    panel["monitor"].setCurrentIndex(index)
+                self._set_combo_data(panel["monitor"], current_connector)
 
             panel["user"].clear()
             panel["user"].addItems(users)
@@ -252,39 +263,41 @@ class MainWindow(QMainWindow):
         if len(self.displays) > 1:
             if self.a["monitor"].currentData() == self.b["monitor"].currentData():
                 self.b["monitor"].setCurrentIndex(1)
-        if len(users) > 1 and self.a["user"].currentText() == self.b["user"].currentText():
+        if (
+            len(users) > 1
+            and self.a["user"].currentText() == self.b["user"].currentText()
+        ):
             self.b["user"].setCurrentIndex(1)
 
-    def _device_choice(self, rule: DeviceRule | None) -> str:
+    @staticmethod
+    def _set_combo_data(combo: QComboBox, value: str) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    @staticmethod
+    def _device_choice(rule: DeviceRule | None) -> str:
         if not rule:
             return MODE_UNMANAGED
-        if rule.mode == "seat":
-            return rule.seat
-        return rule.mode
-
-    def _choice_label(self, choice: str) -> str:
-        return {
-            "seat-a": "Seat A",
-            "seat-b": "Seat B",
-            MODE_SHARED: "Compartilhado",
-            MODE_DISABLED: "Desativado",
-            MODE_UNMANAGED: "Sistema / seat0",
-        }.get(choice, choice)
+        return rule.seat if rule.mode == "seat" else rule.mode
 
     def _make_destination_combo(self, key: str, current: str) -> QComboBox:
         combo = QComboBox()
-        options = [
+        for label, value in (
             ("Seat A", "seat-a"),
             ("Seat B", "seat-b"),
             ("Compartilhado", MODE_SHARED),
             ("Desativado", MODE_DISABLED),
             ("Sistema / seat0", MODE_UNMANAGED),
-        ]
-        for label, value in options:
+        ):
             combo.addItem(label, value)
         index = combo.findData(current)
-        combo.setCurrentIndex(index if index >= 0 else combo.findData(MODE_UNMANAGED))
-        combo.currentIndexChanged.connect(lambda _i, k=key, c=combo: self._rule_changed(k, c))
+        combo.setCurrentIndex(
+            index if index >= 0 else combo.findData(MODE_UNMANAGED)
+        )
+        combo.currentIndexChanged.connect(
+            lambda _i, k=key, c=combo: self._rule_changed(k, c)
+        )
         return combo
 
     def _rule_changed(self, key: str, combo: QComboBox) -> None:
@@ -294,36 +307,49 @@ class MainWindow(QMainWindow):
         current = self.rules.get(key)
         name = current.name if current else ""
         if choice in {"seat-a", "seat-b"}:
-            self.rules[key] = DeviceRule(key=key, mode="seat", seat=choice, name=name)
-        elif choice in {MODE_SHARED, MODE_DISABLED, MODE_UNMANAGED}:
-            self.rules[key] = DeviceRule(key=key, mode=choice, seat="", name=name)  # type: ignore[arg-type]
-        self.status.setText("Alteração pendente. Clique em Aplicar periféricos agora para aplicar sem reiniciar.")
+            self.rules[key] = DeviceRule(
+                key=key, mode="seat", seat=choice, name=name
+            )
+        else:
+            self.rules[key] = DeviceRule(
+                key=key, mode=choice, seat="", name=name  # type: ignore[arg-type]
+            )
+        self.status.setText(
+            "Alteração pendente. Salve ou aplique os periféricos para efetivar."
+        )
 
     def _render_device_table(self) -> None:
         self.loading = True
         try:
             present = {device.key: device for device in self.inputs}
             keys = list(present)
-            for key in self.rules:
-                if key not in present:
-                    keys.append(key)
-
+            keys.extend(key for key in self.rules if key not in present)
             self.device_table.setRowCount(len(keys))
+
             for row, key in enumerate(keys):
                 device = present.get(key)
                 rule = self.rules.get(key)
-                name = device.name if device else (rule.name if rule and rule.name else key)
-                kind = device.kind if device else "—"
-                bus = device.bus if device and device.bus else "interno" if device else "—"
-                state = device.seat if device else "desconectado"
-
-                if device and rule and not rule.name:
-                    rule.name = device.name
                 if device and not rule:
-                    self.rules[key] = DeviceRule(key=key, mode=MODE_UNMANAGED, name=device.name)
-                    rule = self.rules[key]
+                    rule = DeviceRule(
+                        key=key, mode=MODE_UNMANAGED, name=device.name
+                    )
+                    self.rules[key] = rule
+                elif device and rule and not rule.name:
+                    rule.name = device.name
 
-                values = [name, kind, bus, state]
+                name = (
+                    device.name
+                    if device
+                    else rule.name
+                    if rule and rule.name
+                    else key
+                )
+                values = [
+                    name,
+                    device.kind if device else "—",
+                    (device.bus or "interno") if device else "—",
+                    device.seat if device else "desconectado",
+                ]
                 for col, value in enumerate(values):
                     item = QTableWidgetItem(str(value))
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -331,9 +357,13 @@ class MainWindow(QMainWindow):
                         item.setForeground(QColor("gray"))
                     self.device_table.setItem(row, col, item)
 
-                combo = self._make_destination_combo(key, self._device_choice(rule))
+                combo = self._make_destination_combo(
+                    key, self._device_choice(rule)
+                )
                 if not device:
-                    combo.setToolTip("A regra será reaplicada automaticamente quando o periférico voltar.")
+                    combo.setToolTip(
+                        "Regra mantida: será reaplicada quando o periférico voltar."
+                    )
                 self.device_table.setCellWidget(row, 4, combo)
                 self.device_table.setRowHeight(row, 34)
         finally:
@@ -341,7 +371,9 @@ class MainWindow(QMainWindow):
 
     def refresh_all(self, _checked=False, *, silent: bool = False) -> None:
         try:
-            self.displays = [d for d in discover_displays() if d.status == "connected"]
+            self.displays = [
+                item for item in discover_displays() if item.status == "connected"
+            ]
             self.inputs = discover_inputs()
             bluetooth = discover_bluetooth_controllers()
         except Exception as exc:
@@ -356,9 +388,10 @@ class MainWindow(QMainWindow):
         )
         if bluetooth:
             self.bluetooth_note.setText(
-                "Bluetooth: " + ", ".join(bluetooth) +
-                ". O controlador fica global; teclado/mouse/controle Bluetooth aparece "
-                "na tabela e pode ser movido, compartilhado ou desativado."
+                "Bluetooth: "
+                + ", ".join(bluetooth)
+                + ". O controlador fica global; HID Bluetooth (teclado, mouse, "
+                "controle) pode ser movido, compartilhado ou desativado na tabela."
             )
         else:
             self.bluetooth_note.setText("Nenhum controlador Bluetooth detectado.")
@@ -368,13 +401,13 @@ class MainWindow(QMainWindow):
             new_inputs = discover_inputs()
         except Exception:
             return
-        old = {(d.key, d.event) for d in self.inputs}
-        new = {(d.key, d.event) for d in new_inputs}
+        old = {(item.key, item.event) for item in self.inputs}
+        new = {(item.key, item.event) for item in new_inputs}
         if old != new:
             self.inputs = new_inputs
             self._render_device_table()
             self.hardware_label.setText(
-                f"{len(self.displays)} monitor(es) • {len(self.inputs)} input(s) • hotplug detectado"
+                f"{len(self.displays)} monitor(es) • {len(self.inputs)} input(s) • hotplug"
             )
 
     def refresh_runtime_status(self) -> None:
@@ -382,56 +415,75 @@ class MainWindow(QMainWindow):
             status = runtime_status()
         except Exception:
             return
-        if status["running"]:
+        running = bool(status.get("running"))
+        self.live_button.setEnabled(running)
+        if running:
             text = f"ATIVO • {len(status['seats'])} seat(s)"
             if status.get("hotplug"):
                 text += " • hotplug"
             self.runtime_badge.setText(text)
             self.runtime_badge.setStyleSheet(
-                "padding: 6px 12px; border-radius: 10px; background: #2f7d32; color: white; font-weight: 650;"
+                "padding:6px 12px;border-radius:10px;background:#2f7d32;"
+                "color:white;font-weight:650;"
+            )
+            self.live_button.setToolTip(
+                "Aplica mudanças de input sem reiniciar os seats."
             )
         else:
             self.runtime_badge.setText("PC normal")
             self.runtime_badge.setStyleSheet(
-                "padding: 6px 12px; border-radius: 10px; background: palette(midlight);"
+                "padding:6px 12px;border-radius:10px;background:palette(midlight);"
+            )
+            self.live_button.setToolTip(
+                "Disponível somente enquanto o multiseat estiver ativo."
             )
 
     def auto_assign(self, _checked=False) -> None:
         if len(self.displays) < 2:
-            QMessageBox.warning(self, "Distribuição automática", "Conecte pelo menos dois monitores.")
+            QMessageBox.warning(
+                self,
+                "Distribuição automática",
+                "Conecte pelo menos dois monitores.",
+            )
             return
 
-        internal = next((d for d in self.displays if "eDP" in d.connector), None)
-        external = next((d for d in self.displays if not internal or d.connector != internal.connector), None)
+        internal = next(
+            (item for item in self.displays if "eDP" in item.connector), None
+        )
+        external = next(
+            (
+                item
+                for item in self.displays
+                if not internal or item.connector != internal.connector
+            ),
+            None,
+        )
         if internal and external:
             self._set_combo_data(self.a["monitor"], external.connector)
             self._set_combo_data(self.b["monitor"], internal.connector)
 
         for device in self.inputs:
-            external_input = device.bus.lower() in {"usb", "bluetooth"}
-            choice = "seat-a" if external_input else "seat-b"
+            target = (
+                "seat-a"
+                if device.bus.lower() in {"usb", "bluetooth"}
+                else "seat-b"
+            )
             self.rules[device.key] = DeviceRule(
                 key=device.key,
                 mode="seat",
-                seat=choice,
+                seat=target,
                 name=device.name,
             )
         self._render_device_table()
         QMessageBox.information(
             self,
             "Distribuição automática",
-            "USB/Bluetooth foi direcionado ao Seat A e dispositivos internos ao Seat B. "
-            "Revise a tabela antes de iniciar.",
+            "USB/Bluetooth foi direcionado ao Seat A e dispositivos internos "
+            "ao Seat B. Revise a tabela antes de iniciar.",
         )
 
-    @staticmethod
-    def _set_combo_data(combo: QComboBox, value: str) -> None:
-        index = combo.findData(value)
-        if index >= 0:
-            combo.setCurrentIndex(index)
-
     def build_config(self) -> Config:
-        seats = []
+        seats: list[Seat] = []
         for panel in (self.a, self.b):
             seats.append(
                 Seat(
@@ -441,9 +493,7 @@ class MainWindow(QMainWindow):
                     enabled=panel["enabled"].isChecked(),
                 )
             )
-        # Keep disconnected device rules so a replug restores the previous route.
-        rules = list(self.rules.values())
-        return Config(version=2, seats=seats, devices=rules)
+        return Config(version=2, seats=seats, devices=list(self.rules.values()))
 
     def validate_ui(self, show_message: bool = True) -> bool:
         config = self.build_config()
@@ -456,9 +506,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Validação",
-                "Configuração OK."
-                if not errors
-                else "\n".join(errors),
+                "Configuração OK." if not errors else "\n".join(errors),
             )
         return not errors
 
@@ -466,7 +514,11 @@ class MainWindow(QMainWindow):
         helper = shutil.which("multi-seat-arch")
         pkexec = shutil.which("pkexec")
         if not helper or not pkexec:
-            QMessageBox.critical(self, "Erro", "multi-seat-arch ou pkexec não foi encontrado no PATH.")
+            QMessageBox.critical(
+                self,
+                "Erro",
+                "multi-seat-arch ou pkexec não foi encontrado no PATH.",
+            )
             return False
         try:
             proc = subprocess.run(
@@ -481,34 +533,56 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Erro", "A operação excedeu o tempo limite.")
             return False
         if proc.returncode:
-            QMessageBox.critical(self, "Erro", proc.stdout.strip() or f"Falha: {proc.returncode}")
+            QMessageBox.critical(
+                self,
+                "Erro",
+                proc.stdout.strip() or f"Falha: {proc.returncode}",
+            )
             return False
         return True
 
-    def _save_via_helper(self) -> bool:
-        config = self.build_config()
+    def _apply_config_action(self, action: str, *, timeout: int = 180) -> bool:
         with tempfile.NamedTemporaryFile(
             "w", suffix=".json", delete=False, encoding="utf-8"
         ) as handle:
-            json.dump(config.to_dict(), handle, indent=2, ensure_ascii=False)
+            json.dump(
+                self.build_config().to_dict(),
+                handle,
+                indent=2,
+                ensure_ascii=False,
+            )
             path = handle.name
         try:
-            return self._pkexec("apply", path)
+            return self._pkexec(action, path, timeout=timeout)
         finally:
             Path(path).unlink(missing_ok=True)
 
     def save_configuration(self, _checked=False) -> None:
         if not self.validate_ui(show_message=False):
-            QMessageBox.warning(self, "Salvar", "Corrija a configuração antes de salvar.")
+            QMessageBox.warning(
+                self, "Salvar", "Corrija a configuração antes de salvar."
+            )
             return
-        if self._save_via_helper():
+        if self._apply_config_action("apply"):
             self.status.setText("Configuração salva.")
 
     def apply_devices_live(self, _checked=False) -> None:
-        if not self.validate_ui(show_message=False):
-            QMessageBox.warning(self, "Aplicar periféricos", "Corrija a configuração antes de aplicar.")
+        if not runtime_status().get("running"):
+            QMessageBox.information(
+                self,
+                "Aplicação ao vivo",
+                "Inicie o multiseat primeiro. No PC normal, mover os inputs para "
+                "seats que ainda não existem poderia deixar você sem teclado/mouse.",
+            )
             return
-        if self._save_via_helper() and self._pkexec("sync", timeout=90):
+        if not self.validate_ui(show_message=False):
+            QMessageBox.warning(
+                self,
+                "Aplicar periféricos",
+                "Corrija a configuração antes de aplicar.",
+            )
+            return
+        if self._apply_config_action("apply-sync", timeout=90):
             self.status.setText("Periféricos aplicados sem reiniciar os seats.")
             self.refresh_inputs_live()
 
@@ -518,25 +592,29 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.question(
             self,
             "Iniciar multiseat",
-            "A sessão gráfica atual será encerrada durante a transição. "
-            "Se algo falhar, o sistema tentará voltar ao desktop normal automaticamente. Continuar?",
+            "A sessão gráfica atual será encerrada durante a transição. Se algo "
+            "falhar, o sistema tentará voltar ao desktop normal automaticamente. "
+            "Continuar?",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        if self._save_via_helper() and self._pkexec("start"):
-            self.status.setText("Inicialização agendada; a sessão atual será encerrada.")
+        if self._apply_config_action("apply-start"):
+            self.status.setText(
+                "Configuração salva e inicialização agendada."
+            )
 
     def restore(self, _checked=False) -> None:
         answer = QMessageBox.question(
             self,
             "Restaurar PC normal",
-            "Parar seats, proxies compartilhados/desativados, DRM leases e devolver todos os inputs ao seat0?",
+            "Parar seats, compartilhamento/desativação, DRM leases e devolver "
+            "todos os inputs ao seat0?",
         )
         if answer == QMessageBox.StandardButton.Yes and self._pkexec("restore"):
             self.status.setText("Restauração agendada.")
 
 
-def main():
+def main() -> None:
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
