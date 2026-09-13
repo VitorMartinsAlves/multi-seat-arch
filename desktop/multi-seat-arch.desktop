@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Multi Seat Arch
+Comment=Configure multiple Wayland seats on one GPU
+Exec=multi-seat-arch-gui
+Icon=video-display
+Terminal=false
+Categories=System;Settings;
