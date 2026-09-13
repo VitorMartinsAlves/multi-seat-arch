@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from multiseat_arch import backend
@@ -56,42 +58,42 @@ class BackendTests(unittest.TestCase):
             InputDevice("Keyboard", "keyboard", "/dev/input/event2", "/sys/devices/kbd", "usb", "input-222222222222222222222222"),
             InputDevice("Gamepad", "gamepad", "/dev/input/event3", "/sys/devices/pad", "usb", "input-333333333333333333333333"),
         ]
-        with (
-            patch.object(backend.os, "geteuid", return_value=0),
-            patch.object(backend, "validate", return_value=[]),
-            patch.object(backend, "discover_inputs", return_value=devices),
-            patch.object(backend, "_stop_units"),
-            patch.object(backend, "flush_inputs"),
-            patch.object(backend, "_attach") as attach,
-            patch.object(backend, "_start_proxy") as proxy,
-            patch.object(backend, "_run", return_value=Mock(stdout="", returncode=0)),
-            patch.object(backend, "_wait_assignments"),
-            patch.object(backend.READY_DIR, "mkdir"),
-            patch.object(backend.READY_DIR, "glob", return_value=[]),
-        ):
-            backend.sync_devices_now(config)
-            attach.assert_called_once_with("seat-a", "/sys/devices/mouse")
-            self.assertEqual(proxy.call_count, 2)
-            proxy.assert_any_call(devices[1], config.devices[1], config)
-            proxy.assert_any_call(devices[2], config.devices[2], config)
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(backend, "READY_DIR", Path(directory)),
+                patch.object(backend.os, "geteuid", return_value=0),
+                patch.object(backend, "validate", return_value=[]),
+                patch.object(backend, "discover_inputs", return_value=devices),
+                patch.object(backend, "_stop_units"),
+                patch.object(backend, "flush_inputs"),
+                patch.object(backend, "_attach") as attach,
+                patch.object(backend, "_start_proxy") as proxy,
+                patch.object(backend, "_run", return_value=Mock(stdout="", returncode=0)),
+                patch.object(backend, "_wait_assignments"),
+            ):
+                backend.sync_devices_now(config)
+                attach.assert_called_once_with("seat-a", "/sys/devices/mouse")
+                self.assertEqual(proxy.call_count, 2)
+                proxy.assert_any_call(devices[1], config.devices[1], config)
+                proxy.assert_any_call(devices[2], config.devices[2], config)
 
     def test_disconnected_rule_is_kept_but_not_started(self):
         config = self._config()
-        with (
-            patch.object(backend.os, "geteuid", return_value=0),
-            patch.object(backend, "validate", return_value=[]),
-            patch.object(backend, "discover_inputs", return_value=[]),
-            patch.object(backend, "_stop_units"),
-            patch.object(backend, "flush_inputs"),
-            patch.object(backend, "_attach") as attach,
-            patch.object(backend, "_start_proxy") as proxy,
-            patch.object(backend, "_run", return_value=Mock(stdout="", returncode=0)),
-            patch.object(backend.READY_DIR, "mkdir"),
-            patch.object(backend.READY_DIR, "glob", return_value=[]),
-        ):
-            backend.sync_devices_now(config)
-            attach.assert_not_called()
-            proxy.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(backend, "READY_DIR", Path(directory)),
+                patch.object(backend.os, "geteuid", return_value=0),
+                patch.object(backend, "validate", return_value=[]),
+                patch.object(backend, "discover_inputs", return_value=[]),
+                patch.object(backend, "_stop_units"),
+                patch.object(backend, "flush_inputs"),
+                patch.object(backend, "_attach") as attach,
+                patch.object(backend, "_start_proxy") as proxy,
+                patch.object(backend, "_run", return_value=Mock(stdout="", returncode=0)),
+            ):
+                backend.sync_devices_now(config)
+                attach.assert_not_called()
+                proxy.assert_not_called()
 
     def test_failed_activation_rolls_back(self):
         config = self._config()
