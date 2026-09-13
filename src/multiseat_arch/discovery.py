@@ -100,7 +100,6 @@ def _input_name(event: str, sys_class_input: str) -> str:
 
 
 def _physical_syspath(syspath: str) -> str:
-    """Strip volatile inputN/eventN suffixes from a sysfs input path."""
     return re.sub(r"/input/input\d+(?:/event\d+)?$", "", syspath)
 
 
@@ -110,12 +109,6 @@ def stable_device_key(
     syspath: str,
     props: dict[str, str],
 ) -> str:
-    """Return a stable key that survives event-number changes/hotplug.
-
-    ID_PATH is preferred because it is stable for internal serio/I2C devices
-    and USB ports. ID_SERIAL differentiates identical USB/Bluetooth devices.
-    The physical sysfs parent is a final fallback.
-    """
     basis = "|".join(
         part
         for part in (
@@ -136,7 +129,7 @@ def discover_inputs(
     dev_input: str = "/dev/input",
     sys_class_input: str = "/sys/class/input",
 ) -> list[InputDevice]:
-    """Discover input event devices using udev/sysfs as the source of truth."""
+    """Discover real input devices using udev/sysfs as the source of truth."""
     result: list[InputDevice] = []
     seen: set[str] = set()
 
@@ -145,8 +138,12 @@ def discover_inputs(
             _run("udevadm", "info", "--query=property", "--name", event)
         )
         name = _input_name(event, sys_class_input)
-        kind = _kind_from_props(name, props)
+        # Do not feed the uinput clones created by input_proxy back into the
+        # inventory; otherwise hotplug sync would recursively clone its clones.
+        if name.startswith("MSA Shared "):
+            continue
 
+        kind = _kind_from_props(name, props)
         if kind == "other" and props.get("ID_INPUT") != "1":
             continue
 
@@ -184,11 +181,7 @@ def discover_inputs(
 
 
 def discover_bluetooth_controllers() -> list[str]:
-    """Return local Bluetooth controller names (hci0, hci1, ...).
-
-    Controllers intentionally remain global. Individual Bluetooth HID devices
-    are assigned through their evdev nodes just like USB/serio devices.
-    """
+    """Return Bluetooth controllers; controllers remain global by design."""
     return [Path(path).name for path in sorted(glob.glob("/sys/class/bluetooth/hci*"))]
 
 
