@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from .app_compat import create_session_launcher, hide_power_pseudo_apps, prefer_xwayland_for_chromium
-from .theme import apply_kde_like_theme
+from .theme import restore_native_lxqt_theme
 
 
 def _run(command: list[str]) -> None:
@@ -32,10 +32,6 @@ def _ensure_session_environment() -> None:
     os.environ.setdefault("XDG_SESSION_DESKTOP", "LXQt")
     os.environ.setdefault("XDG_SESSION_TYPE", "wayland")
     os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
-    os.environ.setdefault("QT_STYLE_OVERRIDE", "Breeze")
-    os.environ.setdefault("GTK_THEME", "Breeze-Dark")
-    os.environ.setdefault("XCURSOR_THEME", "breeze_cursors")
-    os.environ.setdefault("XCURSOR_SIZE", "24")
     os.environ.setdefault("MOZ_ENABLE_WAYLAND", "1")
 
 
@@ -50,10 +46,6 @@ def _import_activation_environment() -> None:
         "XDG_SESSION_TYPE",
         "XDG_SEAT",
         "QT_QPA_PLATFORM",
-        "QT_STYLE_OVERRIDE",
-        "GTK_THEME",
-        "XCURSOR_THEME",
-        "XCURSOR_SIZE",
         "MOZ_ENABLE_WAYLAND",
     ]
     available = [name for name in names if os.environ.get(name)]
@@ -88,8 +80,6 @@ def _plasma_wallpaper() -> str | None:
 
 def _fallback_wallpaper() -> str | None:
     candidates = [
-        Path("/usr/share/wallpapers/Next/contents/images/1920x1080.jpg"),
-        Path("/usr/share/wallpapers/Next/contents/images/2560x1440.jpg"),
         Path("/usr/share/lxqt/wallpapers/origami-dark-labwc.png"),
         Path("/usr/share/lxqt/wallpapers/waves-logo.png"),
         Path("/usr/share/backgrounds"),
@@ -110,6 +100,7 @@ def _fallback_wallpaper() -> str | None:
 
 
 def _prepare_pcmanfm_profile(profile_name: str, seed_wallpaper: str | None) -> None:
+    """Seed only a missing wallpaper; leave all visual choices to LXQt/PCManFM."""
     profile = Path.home() / f".config/pcmanfm-qt/{profile_name}/settings.conf"
     parser = configparser.ConfigParser(interpolation=None)
     parser.optionxform = str
@@ -121,13 +112,12 @@ def _prepare_pcmanfm_profile(profile_name: str, seed_wallpaper: str | None) -> N
             parser.optionxform = str
     if not parser.has_section("Desktop"):
         parser.add_section("Desktop")
+
     current = parser.get("Desktop", "Wallpaper", fallback="").strip()
-    if not current or not Path(_decode_wallpaper(current)).is_file():
-        if seed_wallpaper:
-            parser.set("Desktop", "Wallpaper", seed_wallpaper)
-            parser.set("Desktop", "WallpaperMode", "zoom")
-    parser.set("Desktop", "BgColor", "#202124")
-    parser.set("Desktop", "FgColor", "#eff0f1")
+    if (not current or not Path(_decode_wallpaper(current)).is_file()) and seed_wallpaper:
+        parser.set("Desktop", "Wallpaper", seed_wallpaper)
+        parser.set("Desktop", "WallpaperMode", "zoom")
+
     profile.parent.mkdir(parents=True, exist_ok=True)
     with profile.open("w", encoding="utf-8") as handle:
         parser.write(handle, space_around_delimiters=False)
@@ -155,8 +145,6 @@ def _write_session_health() -> None:
         f"seat={os.environ.get('XDG_SEAT', '')}",
         f"wayland={os.environ.get('WAYLAND_DISPLAY', '')}",
         f"display={os.environ.get('DISPLAY', '')}",
-        f"qt_style={os.environ.get('QT_STYLE_OVERRIDE', '')}",
-        f"gtk_theme={os.environ.get('GTK_THEME', '')}",
     ]
     try:
         status = Path("/proc/self/status").read_text(encoding="utf-8")
@@ -186,7 +174,7 @@ def main() -> int:
     prefer_xwayland_for_chromium()
     create_session_launcher()
     hide_power_pseudo_apps()
-    apply_kde_like_theme()
+    restore_native_lxqt_theme()
     _prepare_pcmanfm_profiles()
     _import_activation_environment()
     _write_session_health()
