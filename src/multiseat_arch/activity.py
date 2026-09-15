@@ -10,9 +10,10 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from .model import InputDevice
 
 try:
-    from evdev import InputDevice as EvdevInputDevice
+    from evdev import InputDevice as EvdevInputDevice, ecodes
 except ImportError:  # pragma: no cover - installer provides python-evdev
     EvdevInputDevice = None  # type: ignore[assignment]
+    ecodes = None  # type: ignore[assignment]
 
 
 class _ActivityRateLimiter:
@@ -33,17 +34,24 @@ class _ActivityRateLimiter:
         self._last.clear()
 
 
+def _meaningful_events(events: list[object]) -> bool:
+    """Ignore SYN/MSC heartbeats and zero-value noise from gaming HID devices."""
+    if ecodes is None:
+        return bool(events)
+    for event in events:
+        event_type = getattr(event, "type", None)
+        value = getattr(event, "value", 0)
+        if event_type == ecodes.EV_KEY and value in {1, 2}:
+            return True
+        if event_type == ecodes.EV_REL and value != 0:
+            return True
+        if event_type == ecodes.EV_ABS:
+            return True
+    return False
+
+
 class InputActivityMonitor(QObject):
-    """Watch evdev activity for UI identification without EVIOCGRAB.
-
-    Each event node is opened read-only. Linux evdev maintains an independent
-    queue per open file descriptor, so observing activity here does not steal
-    events from the compositor or applications.
-
-    Raw mouse motion can arrive at hundreds or thousands of batches per second.
-    Emitting one Qt signal for every batch can starve the GUI thread, so activity
-    notifications are deliberately rate-limited per input function.
-    """
+    """Watch evdev activity for UI identification without EVIOCGRAB."""
 
     activity = pyqtSignal(str)
     availability = pyqtSignal(int, int)
@@ -62,7 +70,6 @@ class InputActivityMonitor(QObject):
         self._thread.start()
 
     def set_devices(self, devices: Iterable[InputDevice]) -> None:
-        """Replace the event->stable-key inventory watched by the background thread."""
         wanted = {
             device.event: device.key
             for device in devices
@@ -75,7 +82,6 @@ class InputActivityMonitor(QObject):
             self._generation += 1
 
     def stop(self) -> None:
-        """Stop the watcher promptly when the GUI exits."""
         self._stop.set()
         self._thread.join(timeout=1.0)
 
@@ -117,12 +123,8 @@ class InputActivityMonitor(QObject):
                     continue
 
                 try:
-                    ready, _write, _error = select.select(
-                        list(opened), [], [], 0.25
-                    )
+                    ready, _write, _error = select.select(list(opened), [], [], 0.25)
                 except (OSError, ValueError):
-                    # Hot-unplug can invalidate an fd between refreshes. The GUI's
-                    # hardware timer will publish a new generation shortly.
                     self._stop.wait(0.1)
                     continue
 
@@ -132,7 +134,7 @@ class InputActivityMonitor(QObject):
                         continue
                     key, device = entry
                     try:
-                        events = device.read()  # type: ignore[attr-defined]
+                        events = list(device.read())  # type: ignore[attr-defined]
                     except (OSError, BlockingIOError):
                         try:
                             device.close()  # type: ignore[attr-defined]
@@ -140,7 +142,7 @@ class InputActivityMonitor(QObject):
                             pass
                         opened.pop(fd, None)
                         continue
-                    if events and limiter.allow(key, time.monotonic()):
+                    if _meaningful_events(events) and limiter.allow(key, time.monotonic()):
                         self.activity.emit(key)
         finally:
             self._close_all(opened)
