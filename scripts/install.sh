@@ -25,10 +25,14 @@ sudo modprobe uinput
 sudo install -Dm644 \
   udev/70-multi-seat-arch-input-monitor.rules \
   /etc/udev/rules.d/70-multi-seat-arch-input-monitor.rules
-sudo udevadm control --reload
-sudo udevadm trigger --subsystem-match=input --action=change || true
-# Ask logind/udev to settle so a GUI opened immediately after install sees ACLs.
-sudo udevadm settle || true
+
+# systemd-logind only treats inputN devices as seat masters when they carry the
+# master-of-seat tag. The upstream single-GPU multiseat implementation patches
+# systemd's vendor 71-seat.rules in place; do the same semantically through a
+# local rule instead, so package upgrades and recovery stay safe.
+sudo install -Dm644 \
+  udev/72-multi-seat-arch-seat-master.rules \
+  /etc/udev/rules.d/72-multi-seat-arch-seat-master.rules
 
 if systemctl list-unit-files multiseat.service --no-legend 2>/dev/null \
   | grep -q '^multiseat\.service'; then
@@ -37,7 +41,8 @@ if systemctl list-unit-files multiseat.service --no-legend 2>/dev/null \
 fi
 
 # garlett/multiseat used to edit systemd's vendor 71-seat.rules in place.
-# Undo only that exact mutation if it is present; do not overwrite the file.
+# Undo only that exact mutation if it is present; our local rule above supplies
+# master-of-seat without touching files owned by systemd.
 LEGACY_RULE=/usr/lib/udev/rules.d/71-seat.rules
 if [[ -f "$LEGACY_RULE" ]] \
   && grep -Fq 'SUBSYSTEM=="input", KERNEL=="input*", TAG+="seat", TAG+="master-of-seat"' "$LEGACY_RULE"; then
@@ -45,9 +50,11 @@ if [[ -f "$LEGACY_RULE" ]] \
   sudo sed -i \
     's/SUBSYSTEM=="input", KERNEL=="input\*", TAG+="seat", TAG+="master-of-seat"/SUBSYSTEM=="input", KERNEL=="input*", TAG+="seat"/' \
     "$LEGACY_RULE"
-  sudo udevadm control --reload
-  sudo udevadm trigger --subsystem-match=input || true
 fi
+
+sudo udevadm control --reload
+sudo udevadm trigger --subsystem-match=input --action=change || true
+sudo udevadm settle || true
 
 engine_needs_build=0
 dlm_bin=$(command -v drm-lease-manager || true)
