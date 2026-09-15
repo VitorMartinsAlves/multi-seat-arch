@@ -95,6 +95,7 @@ class Config:
             raise ValueError("'seats' precisa ser uma lista.")
 
         seats: list[Seat] = []
+        legacy_input_owner: dict[str, str] = {}
         for raw in raw_seats:
             if not isinstance(raw, dict):
                 raise ValueError("Cada seat precisa ser um objeto.")
@@ -111,9 +112,18 @@ class Config:
             enabled = raw.get("enabled", True)
             if not isinstance(enabled, bool):
                 raise ValueError("'enabled' precisa ser booleano.")
+            name = cls._string(raw, "name")
+            for syspath in inputs:
+                owner = legacy_input_owner.get(syspath)
+                if owner is not None and owner != name:
+                    raise ValueError(
+                        f"Input legado usado por mais de um seat: {syspath} "
+                        f"({owner}, {name})"
+                    )
+                legacy_input_owner[syspath] = name
             seats.append(
                 Seat(
-                    name=cls._string(raw, "name"),
+                    name=name,
                     connector=cls._string(raw, "connector"),
                     user=cls._string(raw, "user"),
                     inputs=inputs,

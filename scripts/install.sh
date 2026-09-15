@@ -37,9 +37,17 @@ if [[ -f "$LEGACY_RULE" ]] \
   sudo udevadm trigger --subsystem-match=input || true
 fi
 
-if ! command -v drm-lease-manager >/dev/null 2>&1 \
-  || [[ ! -x /usr/local/bin/labwc ]] \
-  || ldd /usr/local/bin/labwc 2>/dev/null | grep -q 'not found'; then
+engine_needs_build=0
+dlm_bin=$(command -v drm-lease-manager || true)
+if [[ -z "$dlm_bin" || ! -x /usr/local/bin/labwc ]]; then
+  engine_needs_build=1
+elif ldd "$dlm_bin" 2>/dev/null | grep -q 'not found'; then
+  engine_needs_build=1
+elif ldd /usr/local/bin/labwc 2>/dev/null | grep -q 'not found'; then
+  engine_needs_build=1
+fi
+
+if (( engine_needs_build )); then
   echo "Engine DRM lease ausente/incompleta. Compilando componentes..."
   sudo bash scripts/build-engine.sh
 fi

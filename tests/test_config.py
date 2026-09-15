@@ -46,6 +46,28 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(migrated.version, 2)
         self.assertEqual(migrated.seats[0].inputs, ["/sys/devices/legacy"])
 
+    def test_rejects_legacy_input_owned_by_two_seats(self):
+        with self.assertRaisesRegex(ValueError, "Input legado usado por mais de um seat"):
+            Config.from_dict(
+                {
+                    "version": 1,
+                    "seats": [
+                        {
+                            "name": "seat-a",
+                            "connector": "card1-HDMI-A-1",
+                            "user": "alice",
+                            "inputs": ["/sys/devices/shared-input"],
+                        },
+                        {
+                            "name": "seat-b",
+                            "connector": "card1-eDP-1",
+                            "user": "bob",
+                            "inputs": ["/sys/devices/shared-input"],
+                        },
+                    ],
+                }
+            )
+
     def test_rejects_unknown_top_level_fields(self):
         with self.assertRaises(ValueError):
             Config.from_dict({"version": 2, "seats": [], "exec": "oops"})

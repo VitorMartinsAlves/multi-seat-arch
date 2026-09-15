@@ -39,12 +39,13 @@ class DiscoveryTests(unittest.TestCase):
             },
         )
 
-    def test_stable_key_survives_event_and_usb_port_change_with_serial(self):
+    def test_stable_key_survives_event_and_usb_port_change_with_real_serial(self):
         props_a = {
             "ID_INPUT": "1",
             "ID_INPUT_KEYBOARD": "1",
             "ID_PATH": "pci-0000:00:14.0-usb-0:4.2:1.0",
             "ID_SERIAL": "BY_Tech_Keyboard_ABC",
+            "ID_SERIAL_SHORT": "ABC",
         }
         props_b = dict(props_a)
         props_b["ID_PATH"] = "pci-0000:00:14.0-usb-0:7.1:1.0"
@@ -59,8 +60,28 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(key_a, key_b)
         self.assertRegex(key_a, r"^input-[a-f0-9]{24}$")
 
+    def test_synthesized_serial_without_short_stays_bound_to_port(self):
+        common = {
+            "ID_INPUT": "1",
+            "ID_INPUT_MOUSE": "1",
+            "ID_SERIAL": "Cheap_USB_Mouse",
+        }
+        key_a = stable_device_key(
+            "Cheap USB Mouse", "mouse", "/sys/devices/a/input/input1/event1",
+            {**common, "ID_PATH": "usb-port-a"},
+        )
+        key_b = stable_device_key(
+            "Cheap USB Mouse", "mouse", "/sys/devices/b/input/input1/event1",
+            {**common, "ID_PATH": "usb-port-b"},
+        )
+        self.assertNotEqual(key_a, key_b)
+
     def test_composite_device_interfaces_do_not_collide(self):
-        common = {"ID_SERIAL": "Gaming_Device_ABC", "ID_INPUT_KEYBOARD": "1"}
+        common = {
+            "ID_SERIAL": "Gaming_Device_ABC",
+            "ID_SERIAL_SHORT": "ABC",
+            "ID_INPUT_KEYBOARD": "1",
+        }
         first = stable_device_key(
             "Gaming Keyboard", "keyboard", "/sys/devices/a",
             {**common, "ID_USB_INTERFACE_NUM": "00"},

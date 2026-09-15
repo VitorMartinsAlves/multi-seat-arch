@@ -27,8 +27,11 @@ def runtime_status() -> dict:
     proxies: list[str] = []
     leases: list[str] = []
     for line in proc.stdout.splitlines():
-        unit = line.split(maxsplit=1)[0] if line.strip() else ""
-        if not unit or not unit.endswith(".service") or not _active(unit):
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        unit, _load, active, _sub = fields[:4]
+        if not unit.endswith(".service") or active != "active":
             continue
         if unit.startswith("msa-seat-"):
             seats.append(unit.removeprefix("msa-seat-").removesuffix(".service"))

@@ -30,6 +30,30 @@ class CliTransactionTests(unittest.TestCase):
             self.assertEqual(sync.call_args_list[0].args, (new,))
             self.assertEqual(sync.call_args_list[1].args, (previous,))
 
+    def test_apply_sync_attempts_route_rollback_even_if_save_fails(self):
+        previous = Config(seats=[Seat("seat-a", "card1-HDMI-A-1", "alice")])
+        new = Config(seats=[Seat("seat-a", "card1-HDMI-A-1", "alice")])
+
+        with (
+            patch.object(cli, "ensure_multiseat_running"),
+            patch.object(cli, "input_sync_lock", return_value=nullcontext()),
+            patch.object(cli, "_installed_config_or_none", return_value=previous),
+            patch.object(
+                cli.cfg,
+                "save",
+                side_effect=[None, OSError("disk full")],
+            ),
+            patch.object(
+                cli,
+                "sync_devices_now",
+                side_effect=[RuntimeError("new failed"), None],
+            ) as sync,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "persistência"):
+                cli._apply_sync_transaction(new)
+
+            self.assertEqual(sync.call_args_list[1].args, (previous,))
+
     def test_apply_sync_reports_double_failure(self):
         previous = Config(seats=[Seat("seat-a", "card1-HDMI-A-1", "alice")])
         new = Config(seats=[Seat("seat-a", "card1-HDMI-A-1", "alice")])
