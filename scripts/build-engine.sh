@@ -34,21 +34,39 @@ mkdir -p "$WORK"
 cd "$WORK"
 
 clone_or_checkout() {
-  local url=$1 dir=$2 ref=${3:-}
+  local url=$1 dir=$2 ref=${3:-} fallback=${4:-}
+
   if [[ -d "$dir/.git" ]]; then
-    git -C "$dir" fetch --all --tags --prune
+    if ! git -C "$dir" fetch --all --tags --prune; then
+      echo "Aviso: falha ao atualizar $dir pela origem; usando checkout local existente." >&2
+    fi
     git -C "$dir" reset --hard
     git -C "$dir" clean -fdx
   else
-    git clone "$url" "$dir"
+    if ! git clone "$url" "$dir"; then
+      if [[ -n "$fallback" ]]; then
+        echo "Origem indisponível; tentando mirror: $fallback"
+        git clone "$fallback" "$dir"
+      else
+        echo "Falha ao clonar $url e não há mirror configurado." >&2
+        exit 11
+      fi
+    fi
   fi
 
   if [[ -n "$ref" ]]; then
-    git -C "$dir" checkout --force "$ref"
+    if ! git -C "$dir" checkout --force "$ref"; then
+      echo "Falha ao selecionar ref $ref em $dir." >&2
+      exit 12
+    fi
   else
     local branch
-    branch=$(git -C "$dir" symbolic-ref --short HEAD)
-    git -C "$dir" pull --ff-only origin "$branch"
+    branch=$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || true)
+    if [[ -n "$branch" ]]; then
+      if ! git -C "$dir" pull --ff-only origin "$branch"; then
+        echo "Aviso: pull falhou em $dir; mantendo checkout local." >&2
+      fi
+    fi
   fi
 }
 
@@ -116,7 +134,9 @@ echo "libtoml detectada: $(pkg-config --modversion libtoml)"
 
 clone_or_checkout \
   https://gerrit.automotivelinux.org/gerrit/src/drm-lease-manager \
-  drm-lease-manager
+  drm-lease-manager \
+  "" \
+  https://github.com/AGLExport/drm-lease-manager.git
 if [[ -f drm-lease-manager/meson.build ]]; then
   build_meson drm-lease-manager
 else
