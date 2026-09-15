@@ -128,7 +128,7 @@ def _prepare_pcmanfm_profiles() -> None:
 
 
 def _ensure_chromium_wayland_flags() -> None:
-    """Prefer native Wayland for Arch Chromium/Chrome wrappers without clobbering user flags."""
+    """Prefer native Wayland for Chromium-family launchers without clobbering user flags."""
     flag = "--ozone-platform-hint=auto"
     for filename in ("chromium-flags.conf", "chrome-flags.conf"):
         path = Path.home() / ".config" / filename
@@ -149,11 +149,73 @@ def _ensure_chromium_wayland_flags() -> None:
             pass
 
 
+def _command_result(command: list[str]) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=8,
+            check=False,
+        )
+        return proc.returncode, proc.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 127, str(exc)
+
+
+def _write_session_health() -> None:
+    """Record app-sandbox readiness from inside the actual seat session.
+
+    This scales to any seat/user and catches the class of failures that cannot
+    be detected by the installer running outside the PAM-created compositor
+    service (Steam/pressure-vessel, Chromium, Flatpak, Electron, etc.).
+    """
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    path = runtime / "multi-seat-arch-health.log"
+    lines = [
+        f"uid={os.getuid()}",
+        f"seat={os.environ.get('XDG_SEAT', '')}",
+        f"wayland={os.environ.get('WAYLAND_DISPLAY', '')}",
+        f"display={os.environ.get('DISPLAY', '')}",
+    ]
+    try:
+        status = Path("/proc/self/status").read_text(encoding="utf-8")
+        for key in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs"):
+            match = re.search(rf"^{key}:\s*(.+)$", status, flags=re.MULTILINE)
+            if match:
+                lines.append(f"{key}={match.group(1).strip()}")
+    except OSError as exc:
+        lines.append(f"status_error={exc}")
+
+    unshare = shutil.which("unshare")
+    if unshare:
+        code, output = _command_result([unshare, "--user", "--map-root-user", "/usr/bin/true"])
+        lines.append(f"unshare_rc={code}")
+        if output:
+            lines.append(f"unshare_output={output}")
+
+    bwrap = shutil.which("bwrap")
+    if bwrap:
+        code, output = _command_result(
+            [bwrap, "--unshare-user", "--unshare-pid", "--ro-bind", "/", "/", "/usr/bin/true"]
+        )
+        lines.append(f"bwrap_rc={code}")
+        if output:
+            lines.append(f"bwrap_output={output}")
+
+    try:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def main() -> int:
     _ensure_session_environment()
     _import_activation_environment()
     _prepare_pcmanfm_profiles()
     _ensure_chromium_wayland_flags()
+    _write_session_health()
 
     lxqt_session = shutil.which("lxqt-session")
     if lxqt_session:
