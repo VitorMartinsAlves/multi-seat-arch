@@ -126,9 +126,6 @@ def stable_device_key(
     collapse several evdev functions into one rule. Devices without a hardware
     serial deliberately fall back to their physical path/port.
     """
-    # ID_SERIAL may exist even when the USB device has no unique serial; udev can
-    # synthesize it from vendor/model. ID_SERIAL_SHORT is only present when a real
-    # hardware serial is available, so only then is port-independent identity safe.
     serial_short = props.get("ID_SERIAL_SHORT", "").strip()
     serial = props.get("ID_SERIAL", "").strip() if serial_short else ""
     path = (props.get("ID_PATH", "") or props.get("ID_PATH_TAG", "")).strip()
@@ -145,6 +142,31 @@ def stable_device_key(
     return f"input-{digest}"
 
 
+def physical_group_key(syspath: str, props: dict[str, str]) -> str:
+    """Build a UI-only identity for functions belonging to one physical device.
+
+    Routing still uses each function's stable key. This broader key exists only
+    so composite USB/Bluetooth devices can be rendered as a single row.
+    """
+    serial_short = props.get("ID_SERIAL_SHORT", "").strip()
+    serial = props.get("ID_SERIAL", "").strip() if serial_short else ""
+    if serial:
+        basis = f"serial:{serial}"
+    else:
+        path = (props.get("ID_PATH", "") or props.get("ID_PATH_TAG", "")).strip()
+        if path:
+            # Strip interface/event suffixes while keeping the physical USB port.
+            path = re.sub(r":1\.\d+(?:-event-[^-]+)?$", "", path)
+            path = re.sub(r"-event-[^-]+$", "", path)
+            basis = f"path:{path}"
+        else:
+            physical = _physical_syspath(syspath)
+            physical = re.sub(r"/[^/]+:\d+\.\d+$", "", physical)
+            basis = f"sysfs:{physical}"
+    digest = hashlib.sha256(basis.encode("utf-8", "replace")).hexdigest()[:20]
+    return f"group-{digest}"
+
+
 def discover_inputs(
     dev_input: str = "/dev/input",
     sys_class_input: str = "/sys/class/input",
@@ -158,8 +180,6 @@ def discover_inputs(
             _run("udevadm", "info", "--query=property", "--name", event)
         )
         name = _input_name(event, sys_class_input)
-        # Do not feed the uinput clones created by input_proxy back into the
-        # inventory; otherwise hotplug sync would recursively clone its clones.
         if name.startswith("MSA Shared "):
             continue
 
@@ -194,6 +214,7 @@ def discover_inputs(
                 bus=props.get("ID_BUS", ""),
                 key=stable_device_key(name, kind, syspath, props),
                 seat=props.get("ID_SEAT", "seat0") or "seat0",
+                group_key=physical_group_key(syspath, props),
             )
         )
 
