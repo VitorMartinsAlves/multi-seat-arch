@@ -7,6 +7,7 @@ from multiseat_arch.discovery import (
     parse_udev_database,
     parse_udev_properties,
     physical_group_key,
+    seat_assignable_syspath,
     stable_device_key,
 )
 
@@ -61,6 +62,26 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(props["ID_INPUT_KEYBOARD"], "1")
         self.assertEqual(props["ID_BUS"], "usb")
         self.assertIn("/dev/input/event6", database)
+
+    def test_seat_assignment_uses_input_parent_not_event_child(self):
+        usb = (
+            "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-4/1-4.2/"
+            "1-4.2:1.0/0003:258A:0049.0001/input/input6/event6"
+        )
+        i2c = (
+            "/sys/devices/pci0000:00/0000:00:15.1/i2c_designware.1/i2c-1/"
+            "i2c-ELAN0504:01/0018:04F3:312A.0006/input/input24/event19"
+        )
+        self.assertEqual(
+            seat_assignable_syspath(usb),
+            usb.removesuffix("/event6"),
+        )
+        self.assertEqual(
+            seat_assignable_syspath(i2c),
+            i2c.removesuffix("/event19"),
+        )
+        already_parent = "/sys/devices/platform/i8042/serio0/input/input4"
+        self.assertEqual(seat_assignable_syspath(already_parent), already_parent)
 
     def test_stable_key_survives_event_and_usb_port_change_with_real_serial(self):
         props_a = {

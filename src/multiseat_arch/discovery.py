@@ -144,6 +144,16 @@ def _physical_syspath(syspath: str) -> str:
     return re.sub(r"/input/input\d+(?:/event\d+)?$", "", syspath)
 
 
+def seat_assignable_syspath(syspath: str) -> str:
+    """Return the seat-eligible input parent used by systemd-logind.
+
+    `loginctl attach` only accepts devices tagged as seat-assignable by udev.
+    For Linux input devices that is the `inputN` parent, not its `eventN` child.
+    Keeping the event node in `InputDevice.event` still lets evdev read activity.
+    """
+    return re.sub(r"(/input/input\d+)/event\d+$", r"\1", syspath)
+
+
 def _interface_identity(props: dict[str, str]) -> str:
     interface = props.get("ID_USB_INTERFACE_NUM", "").strip()
     if interface:
@@ -210,8 +220,6 @@ def discover_inputs(
         if entry is not None:
             props, path = entry
         else:
-            # Fallback for minimal/older udev builds or a device that appeared
-            # between the export snapshot and the /dev scan.
             props = parse_udev_properties(
                 _run("udevadm", "info", "--query=property", "--name", event)
             )
@@ -226,17 +234,21 @@ def discover_inputs(
             continue
 
         if path.startswith("/devices/"):
-            syspath = f"/sys{path}"
+            raw_syspath = f"/sys{path}"
         elif path.startswith("/sys/devices/"):
-            syspath = path
+            raw_syspath = path
         else:
             candidate = Path(sys_class_input) / Path(event).name
             try:
-                syspath = str(candidate.resolve(strict=True))
+                raw_syspath = str(candidate.resolve(strict=True))
             except OSError:
                 continue
 
-        if not syspath.startswith("/sys/devices/") or syspath in seen:
+        if not raw_syspath.startswith("/sys/devices/"):
+            continue
+
+        syspath = seat_assignable_syspath(raw_syspath)
+        if syspath in seen:
             continue
         seen.add(syspath)
 
@@ -247,9 +259,9 @@ def discover_inputs(
                 event=event,
                 syspath=syspath,
                 bus=props.get("ID_BUS", ""),
-                key=stable_device_key(name, kind, syspath, props),
+                key=stable_device_key(name, kind, raw_syspath, props),
                 seat=props.get("ID_SEAT", "seat0") or "seat0",
-                group_key=physical_group_key(syspath, props),
+                group_key=physical_group_key(raw_syspath, props),
             )
         )
 
