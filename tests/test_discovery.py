@@ -4,6 +4,7 @@ from multiseat_arch.discovery import (
     _kind_from_props,
     connector_lease_name,
     parse_libinput,
+    parse_udev_database,
     parse_udev_properties,
     physical_group_key,
     stable_device_key,
@@ -39,6 +40,27 @@ class DiscoveryTests(unittest.TestCase):
                 "ID_BUS": "i2c",
             },
         )
+
+    def test_parse_udev_database_maps_event_nodes(self):
+        database = parse_udev_database(
+            "P: /devices/pci0000:00/input/input3/event3\n"
+            "N: input/event3\n"
+            "E: DEVNAME=/dev/input/event3\n"
+            "E: ID_INPUT=1\n"
+            "E: ID_INPUT_KEYBOARD=1\n"
+            "E: ID_BUS=usb\n\n"
+            "P: /devices/platform/i2c/input/input6/event6\n"
+            "N: input/event6\n"
+            "E: DEVNAME=/dev/input/event6\n"
+            "E: ID_INPUT=1\n"
+            "E: ID_INPUT_TOUCHPAD=1\n"
+            "E: ID_BUS=i2c\n"
+        )
+        props, path = database["/dev/input/event3"]
+        self.assertEqual(path, "/devices/pci0000:00/input/input3/event3")
+        self.assertEqual(props["ID_INPUT_KEYBOARD"], "1")
+        self.assertEqual(props["ID_BUS"], "usb")
+        self.assertIn("/dev/input/event6", database)
 
     def test_stable_key_survives_event_and_usb_port_change_with_real_serial(self):
         props_a = {
