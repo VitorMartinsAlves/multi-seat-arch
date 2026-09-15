@@ -1,20 +1,46 @@
 from __future__ import annotations
 
+import os
 import pwd
 import shutil
 from pathlib import Path
 from types import ModuleType
 
 
-def _labwc_command(compositor: str) -> list[str]:
+def _labwc_command(compositor: str, config_dir: str | None = None) -> list[str]:
     command = [compositor]
     if Path(compositor).name == "labwc":
         command.append("--debug")
-        session = shutil.which("multi-seat-arch-session")
-        if not session:
-            raise RuntimeError("multi-seat-arch-session não encontrado; reinstale o pacote.")
-        command.extend(["-s", session])
+        if config_dir:
+            command.extend(["-C", config_dir])
     return command
+
+
+def _prepare_labwc_config(seat_name: str, uid: int, gid: int) -> str:
+    """Create an ephemeral Labwc config whose autostart runs after DISPLAY exists.
+
+    Labwc documents that its autostart script is executed after WAYLAND_DISPLAY
+    and, when XWayland support is compiled in, DISPLAY have been defined. Steam
+    and Chromium-family launchers therefore inherit a usable graphical session
+    instead of starting from Labwc's earlier -s startup hook.
+    """
+    session = shutil.which("multi-seat-arch-session")
+    if not session:
+        raise RuntimeError("multi-seat-arch-session não encontrado; reinstale o pacote.")
+
+    base = Path("/run/multi-seat-arch") / f"labwc-{seat_name}"
+    base.mkdir(parents=True, exist_ok=True)
+    autostart = base / "autostart"
+    autostart.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        f"exec {session}\n",
+        encoding="utf-8",
+    )
+    autostart.chmod(0o755)
+    os.chown(base, uid, gid)
+    os.chown(autostart, uid, gid)
+    return str(base)
 
 
 def install(backend: ModuleType) -> None:
@@ -26,6 +52,7 @@ def install(backend: ModuleType) -> None:
     def start_seat(config, seat) -> None:
         account = pwd.getpwnam(seat.user)
         uid = account.pw_uid
+        gid = account.pw_gid
         runtime = backend.runtime_seat_name(seat)
         backend._wait_for_lease(seat.connector, uid)
 
@@ -36,6 +63,10 @@ def install(backend: ModuleType) -> None:
         )
         if not compositor:
             raise RuntimeError(f"Compositor não encontrado: {config.compositor}")
+
+        labwc_config = None
+        if Path(compositor).name == "labwc":
+            labwc_config = _prepare_labwc_config(seat.name, uid, gid)
 
         env = {
             "XDG_SEAT": runtime,
@@ -55,7 +86,7 @@ def install(backend: ModuleType) -> None:
         unit = f"msa-seat-{seat.name}"
         backend._systemd_run(
             unit,
-            _labwc_command(compositor),
+            _labwc_command(compositor, labwc_config),
             uid=uid,
             env=env,
             properties=[
