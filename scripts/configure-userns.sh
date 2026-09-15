@@ -31,9 +31,8 @@ trap 'rm -f "$TMP"' EXIT
     echo "kernel.unprivileged_userns_clone = 1"
   fi
 
-  # AppArmor 4/modern distro kernels can deny userns even when
-  # kernel.unprivileged_userns_clone=1. Disable only the user-namespace
-  # mediation knobs when those sysctls exist; AppArmor itself stays enabled.
+  # Modern AppArmor can block userns even when unprivileged_userns_clone=1.
+  # Disable only AppArmor's user-namespace mediation knobs, not AppArmor itself.
   if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
     echo "kernel.apparmor_restrict_unprivileged_userns = 0"
   fi
@@ -44,14 +43,11 @@ trap 'rm -f "$TMP"' EXIT
 
 if [[ -s "$TMP" ]]; then
   install -Dm644 "$TMP" "$SYSCTL_FILE"
-  sysctl --system >/dev/null
+  sysctl -p "$SYSCTL_FILE" >/dev/null
 fi
 
-# Validate the capability Steam/Chromium actually need instead of trusting one
-# distro-specific sysctl name. This catches AppArmor/LSM restrictions too.
-if ! runuser -u "$TARGET_USER" -- unshare --user --map-root-user /usr/bin/true; then
-  echo "Falha: user namespaces continuam bloqueados para $TARGET_USER." >&2
-  echo "Diagnóstico:" >&2
+print_diag() {
+  echo "Diagnóstico de user namespaces:" >&2
   for key in \
     user.max_user_namespaces \
     kernel.unprivileged_userns_clone \
@@ -59,7 +55,26 @@ if ! runuser -u "$TARGET_USER" -- unshare --user --map-root-user /usr/bin/true; 
     kernel.apparmor_restrict_unprivileged_unconfined; do
     sysctl "$key" 2>/dev/null || true
   done >&2
+}
+
+# Validate the capability itself instead of assuming a distro-specific knob is enough.
+if ! runuser -u "$TARGET_USER" -- unshare --user --map-root-user /usr/bin/true; then
+  echo "Falha: criação de user namespace continua bloqueada para $TARGET_USER." >&2
+  print_diag
   exit 3
 fi
 
-echo "User namespaces validados para $TARGET_USER."
+# Steam pressure-vessel uses bubblewrap. This catches LSM/mount restrictions that
+# a bare unshare test does not catch and is also representative of Chromium sandboxes.
+if command -v bwrap >/dev/null 2>&1; then
+  if ! runuser -u "$TARGET_USER" -- bwrap \
+      --unshare-user --unshare-pid --unshare-ipc --unshare-uts \
+      --ro-bind /usr /usr --proc /proc --dev /dev \
+      /usr/bin/true; then
+    echo "Falha: bubblewrap ainda não consegue criar o sandbox para $TARGET_USER." >&2
+    print_diag
+    exit 4
+  fi
+fi
+
+echo "User namespaces e bubblewrap validados para $TARGET_USER."
