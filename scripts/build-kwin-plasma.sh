@@ -25,14 +25,26 @@ tag="v${kwin_ver}"
 echo "KWin instalado: $pkgver"
 echo "Fonte experimental: KDE/kwin $tag"
 
+# Use the Arch KWin make dependencies instead of fixing missing headers one by
+# one. The installed kwin package already pulls the runtime libraries; these
+# are the extra build-time pieces required by upstream KWin on Arch/CachyOS.
 sudo pacman -S --needed --noconfirm \
-  git base-devel cmake ninja extra-cmake-modules pkgconf \
-  wayland-protocols plasma-workspace
+  git base-devel cmake ninja extra-cmake-modules pkgconf python \
+  kdoctools krunner plasma-wayland-protocols vulkan-headers \
+  wayland-protocols xorg-xwayland plasma-workspace
+
+# Fail early with a useful message if the package transaction above somehow
+# did not provide the Vulkan SDK headers expected by KWin's CMake checks.
+if [[ ! -f /usr/include/vulkan/vulkan.h ]]; then
+  echo "Falha: headers Vulkan ausentes mesmo após instalar vulkan-headers." >&2
+  echo "Verifique o pacote com: pacman -Ql vulkan-headers" >&2
+  exit 3
+fi
 
 export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
 if ! pkg-config --exists libdlmclient; then
   echo "libdlmclient não foi encontrada. Rode primeiro: bash scripts/install.sh" >&2
-  exit 3
+  exit 4
 fi
 
 mkdir -p "$WORK"
@@ -49,7 +61,7 @@ python "$REPO_DIR/scripts/patch-kwin-drm-lease.py" "$SRC"
 
 grep -q 'MULTI_SEAT_ARCH_DRM_LEASE' "$SRC/src/core/session_logind.cpp" || {
   echo "Falha: patch KWin não foi aplicado." >&2
-  exit 4
+  exit 5
 }
 
 rm -rf "$BUILD" "$STAGE"
@@ -65,7 +77,7 @@ DESTDIR="$STAGE" cmake --install "$BUILD"
 for binary in kwin_wayland kwin_wayland_wrapper; do
   [[ -x "$STAGE/usr/bin/$binary" ]] || {
     echo "Falha: $binary não apareceu no staging." >&2
-    exit 5
+    exit 6
   }
 done
 
@@ -100,5 +112,5 @@ if [[ -z "$missing" ]]; then
 else
   echo "Falha: bibliotecas ausentes no KWin experimental:" >&2
   echo "$missing" >&2
-  exit 6
+  exit 7
 fi
