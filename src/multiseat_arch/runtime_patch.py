@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
 import pwd
-import time
+import shutil
 from pathlib import Path
 from types import ModuleType
 
@@ -11,19 +10,14 @@ def _labwc_command(compositor: str) -> list[str]:
     command = [compositor]
     if Path(compositor).name == "labwc":
         command.append("--debug")
+        session = shutil.which("multi-seat-arch-session")
+        if not session:
+            raise RuntimeError("multi-seat-arch-session não encontrado; reinstale o pacote.")
+        command.extend(["-s", session])
     return command
 
 
 def install(backend: ModuleType) -> None:
-    """Install target-host runtime fixes without changing the public API.
-
-    The target CachyOS host reaches compositor startup successfully, but labwc
-    exits before creating its Wayland socket.  The upstream single-GPU project
-    relies on PAM to establish XDG_RUNTIME_DIR for the compositor and on a
-    logind/libseat session.  Do the same here and force libseat's logind backend
-    so seatd cannot claim the custom XDG_SEAT.
-    """
-
     if getattr(backend, "_msa_runtime_patch_installed", False):
         return
 
@@ -43,18 +37,19 @@ def install(backend: ModuleType) -> None:
         if not compositor:
             raise RuntimeError(f"Compositor não encontrado: {config.compositor}")
 
-        # PAMName=login/pam_systemd must create and own /run/user/<uid> for the
-        # compositor.  Do not pre-set XDG_RUNTIME_DIR here: doing so diverged
-        # from the upstream working startup sequence and can leave labwc with a
-        # stale runtime path after graphical.target has been isolated away.
         env = {
             "XDG_SEAT": runtime,
             "DRM_LEASE": seat.connector,
             "XDG_SESSION_TYPE": "wayland",
+            "XDG_CURRENT_DESKTOP": "LXQt",
+            "XDG_SESSION_DESKTOP": "LXQt",
             "SEATD_VTBOUND": "0",
             "XKB_DEFAULT_LAYOUT": backend._keyboard_layout(),
             "LIBSEAT_BACKEND": "logind",
             "LIBSEAT_LOGLEVEL": "debug",
+            "LABWC_UPDATE_ACTIVATION_ENV": "1",
+            "QT_QPA_PLATFORM": "wayland;xcb",
+            "MOZ_ENABLE_WAYLAND": "1",
         }
 
         unit = f"msa-seat-{seat.name}"
@@ -72,12 +67,9 @@ def install(backend: ModuleType) -> None:
                 "ExecStartPre=/bin/sleep 0.1",
             ],
         )
-        wayland_display = backend._wait_for_wayland(uid, f"{unit}.service")
-        backend._start_user_apps(seat.name, runtime, uid, wayland_display)
+        backend._wait_for_wayland(uid, f"{unit}.service")
 
     def persist_activation_error(exc: BaseException) -> None:
-        # Preserve the normal first two lines, then append enough state to make
-        # the next hardware failure actionable without another blind release.
         original_persist(exc)
         try:
             sections: list[str] = []
@@ -85,14 +77,7 @@ def install(backend: ModuleType) -> None:
                 ("SEATS", ["loginctl", "list-seats", "--no-legend"]),
                 (
                     "MSA UNITS",
-                    [
-                        "systemctl",
-                        "list-units",
-                        "--all",
-                        "--plain",
-                        "--no-legend",
-                        "msa-*",
-                    ],
+                    ["systemctl", "list-units", "--all", "--plain", "--no-legend", "msa-*"],
                 ),
             ]
             for title, command in commands:
@@ -102,17 +87,7 @@ def install(backend: ModuleType) -> None:
             units = backend._list_units(("msa-seat-", "msa-dlm-"))
             for unit in units:
                 log = backend._run(
-                    [
-                        "journalctl",
-                        "-u",
-                        unit,
-                        "-b",
-                        "--no-pager",
-                        "-o",
-                        "cat",
-                        "-n",
-                        "160",
-                    ],
+                    ["journalctl", "-u", unit, "-b", "--no-pager", "-o", "cat", "-n", "160"],
                     check=False,
                 ).stdout.strip()
                 sections.append(f"\n--- {unit} ---\n{log}\n")
@@ -135,7 +110,6 @@ def install(backend: ModuleType) -> None:
             with backend.LAST_ERROR.open("a", encoding="utf-8") as handle:
                 handle.write("".join(sections))
         except Exception:
-            # Diagnostics must never prevent rollback.
             pass
 
     backend._start_seat = start_seat
