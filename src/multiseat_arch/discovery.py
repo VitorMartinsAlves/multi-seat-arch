@@ -121,12 +121,16 @@ def stable_device_key(
 ) -> str:
     """Build a persistent identity for one evdev function.
 
-    A hardware serial makes a peripheral follow USB port changes. The USB
+    A real hardware serial makes a peripheral follow USB port changes. The USB
     interface number is retained so composite gaming keyboards/mice do not
-    collapse several evdev functions into one rule. Devices without a serial
-    deliberately fall back to their physical path/port.
+    collapse several evdev functions into one rule. Devices without a hardware
+    serial deliberately fall back to their physical path/port.
     """
-    serial = props.get("ID_SERIAL", "").strip()
+    # ID_SERIAL may exist even when the USB device has no unique serial; udev can
+    # synthesize it from vendor/model. ID_SERIAL_SHORT is only present when a real
+    # hardware serial is available, so only then is port-independent identity safe.
+    serial_short = props.get("ID_SERIAL_SHORT", "").strip()
+    serial = props.get("ID_SERIAL", "").strip() if serial_short else ""
     path = (props.get("ID_PATH", "") or props.get("ID_PATH_TAG", "")).strip()
     interface = _interface_identity(props)
     if serial:
