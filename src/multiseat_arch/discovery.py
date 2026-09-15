@@ -67,6 +67,47 @@ def parse_udev_properties(text: str) -> dict[str, str]:
     return props
 
 
+def parse_udev_database(text: str) -> dict[str, tuple[dict[str, str], str]]:
+    """Parse `udevadm info --export-db` entries for /dev/input/event* nodes.
+
+    The GUI refreshes hardware periodically. Querying udev twice for every event
+    node made a 25-input machine spawn about 50 subprocesses per refresh, which
+    could block Qt long enough to look frozen. The export database gives us all
+    metadata in one subprocess.
+    """
+    result: dict[str, tuple[dict[str, str], str]] = {}
+    path = ""
+    names: list[str] = []
+    props: dict[str, str] = {}
+
+    def commit() -> None:
+        nonlocal path, names, props
+        candidates = [f"/dev/{name}" for name in names if name.startswith("input/event")]
+        devname = props.get("DEVNAME", "")
+        if devname.startswith("/dev/input/event"):
+            candidates.append(devname)
+        for event in candidates:
+            result[event] = (dict(props), path)
+        path = ""
+        names = []
+        props = {}
+
+    for line in text.splitlines() + [""]:
+        if not line:
+            if path or names or props:
+                commit()
+            continue
+        if line.startswith("P: "):
+            path = line[3:].strip()
+        elif line.startswith("N: "):
+            names.append(line[3:].strip())
+        elif line.startswith("E: ") and "=" in line[3:]:
+            key, value = line[3:].split("=", 1)
+            props[key] = value
+
+    return result
+
+
 def parse_libinput(text: str) -> list[tuple[str, str]]:
     """Backward-compatible parser used by tests and migration tooling."""
     devices: list[tuple[str, str]] = []
@@ -108,7 +149,6 @@ def _interface_identity(props: dict[str, str]) -> str:
     if interface:
         return interface
     path = props.get("ID_PATH", "")
-    # Typical ID_PATH tail: ...usb-0:4.2:1.0 or ...usb-0:7.1:1.1-event-kbd.
     matches = re.findall(r":(\d+\.\d+)(?=-|$)", path)
     return matches[-1] if matches else ""
 
@@ -119,13 +159,7 @@ def stable_device_key(
     syspath: str,
     props: dict[str, str],
 ) -> str:
-    """Build a persistent identity for one evdev function.
-
-    A real hardware serial makes a peripheral follow USB port changes. The USB
-    interface number is retained so composite gaming keyboards/mice do not
-    collapse several evdev functions into one rule. Devices without a hardware
-    serial deliberately fall back to their physical path/port.
-    """
+    """Build a persistent identity for one evdev function."""
     serial_short = props.get("ID_SERIAL_SHORT", "").strip()
     serial = props.get("ID_SERIAL", "").strip() if serial_short else ""
     path = (props.get("ID_PATH", "") or props.get("ID_PATH_TAG", "")).strip()
@@ -143,11 +177,7 @@ def stable_device_key(
 
 
 def physical_group_key(syspath: str, props: dict[str, str]) -> str:
-    """Build a UI-only identity for functions belonging to one physical device.
-
-    Routing still uses each function's stable key. This broader key exists only
-    so composite USB/Bluetooth devices can be rendered as a single row.
-    """
+    """Build a UI-only identity for functions belonging to one physical device."""
     serial_short = props.get("ID_SERIAL_SHORT", "").strip()
     serial = props.get("ID_SERIAL", "").strip() if serial_short else ""
     if serial:
@@ -155,7 +185,6 @@ def physical_group_key(syspath: str, props: dict[str, str]) -> str:
     else:
         path = (props.get("ID_PATH", "") or props.get("ID_PATH_TAG", "")).strip()
         if path:
-            # Strip interface/event suffixes while keeping the physical USB port.
             path = re.sub(r":1\.\d+(?:-event-[^-]+)?$", "", path)
             path = re.sub(r"-event-[^-]+$", "", path)
             basis = f"path:{path}"
@@ -174,11 +203,20 @@ def discover_inputs(
     """Discover real input devices using udev/sysfs as the source of truth."""
     result: list[InputDevice] = []
     seen: set[str] = set()
+    database = parse_udev_database(_run("udevadm", "info", "--export-db"))
 
     for event in sorted(glob.glob(f"{dev_input}/event*"), key=_event_sort_key):
-        props = parse_udev_properties(
-            _run("udevadm", "info", "--query=property", "--name", event)
-        )
+        entry = database.get(event)
+        if entry is not None:
+            props, path = entry
+        else:
+            # Fallback for minimal/older udev builds or a device that appeared
+            # between the export snapshot and the /dev scan.
+            props = parse_udev_properties(
+                _run("udevadm", "info", "--query=property", "--name", event)
+            )
+            path = _run("udevadm", "info", "--query=path", "--name", event).strip()
+
         name = _input_name(event, sys_class_input)
         if name.startswith("MSA Shared "):
             continue
@@ -187,9 +225,6 @@ def discover_inputs(
         if kind == "other" and props.get("ID_INPUT") != "1":
             continue
 
-        path = _run(
-            "udevadm", "info", "--query=path", "--name", event
-        ).strip()
         if path.startswith("/devices/"):
             syspath = f"/sys{path}"
         elif path.startswith("/sys/devices/"):
