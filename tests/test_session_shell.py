@@ -21,7 +21,7 @@ class SessionShellTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "multi-seat-arch-session"):
                 runtime_patch._labwc_command("/usr/local/bin/labwc")
 
-    def test_plasma_wallpaper_is_reused_for_pcmanfm(self):
+    def test_plasma_wallpaper_is_reused_for_both_pcmanfm_profiles(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             wallpaper = home / "wall paper.jpg"
@@ -32,12 +32,29 @@ class SessionShellTests(unittest.TestCase):
             plasma.write_text(f"[Wallpaper]\nImage=file://{encoded}\n", encoding="utf-8")
 
             with patch("multiseat_arch.session_shell.Path.home", return_value=home):
-                session_shell._prepare_pcmanfm_profile()
+                session_shell._prepare_pcmanfm_profiles()
 
-            settings = home / ".config/pcmanfm-qt/lxqt/settings.conf"
-            text = settings.read_text(encoding="utf-8")
-            self.assertIn(f"Wallpaper={wallpaper}", text)
-            self.assertIn("WallpaperMode=zoom", text)
+            for profile_name in ("lxqt", "lxqtwayland"):
+                settings = home / f".config/pcmanfm-qt/{profile_name}/settings.conf"
+                text = settings.read_text(encoding="utf-8")
+                self.assertIn(f"Wallpaper={wallpaper}", text)
+                self.assertIn("WallpaperMode=zoom", text)
+
+    def test_existing_valid_wallpaper_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            existing = home / "custom.jpg"
+            existing.write_bytes(b"custom")
+            profile = home / ".config/pcmanfm-qt/lxqt/settings.conf"
+            profile.parent.mkdir(parents=True)
+            profile.write_text(f"[Desktop]\nWallpaper={existing}\nWallpaperMode=fit\n", encoding="utf-8")
+
+            with patch("multiseat_arch.session_shell.Path.home", return_value=home):
+                session_shell._prepare_pcmanfm_profile("lxqt", "/other/wallpaper.jpg")
+
+            text = profile.read_text(encoding="utf-8")
+            self.assertIn(f"Wallpaper={existing}", text)
+            self.assertIn("WallpaperMode=fit", text)
 
     def test_activation_environment_includes_x11_and_wayland(self):
         calls = []
