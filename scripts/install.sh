@@ -8,23 +8,20 @@ fi
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-ENGINE_REV=direct-input-v2
+ENGINE_REV=direct-input-v3
 ENGINE_STAMP=/usr/local/share/multi-seat-arch/engine-version
 
 sudo pacman -S --needed --noconfirm \
   python python-pyqt6 python-pip python-evdev qt6-wayland \
   libinput systemd pciutils polkit pcmanfm-qt xfce4-terminal acl
 
-# Shared/disabled inputs are implemented with EVIOCGRAB + uinput clones.
 echo uinput | sudo tee /etc/modules-load.d/multi-seat-arch.conf >/dev/null
 sudo modprobe uinput
 
-# Activity identification only needs local-session read ACLs.
 sudo install -Dm644 \
   udev/70-multi-seat-arch-input-monitor.rules \
   /etc/udev/rules.d/70-multi-seat-arch-input-monitor.rules
 
-# Keep inputN parents visible as seat masters without editing systemd-owned files.
 sudo install -Dm644 \
   udev/72-multi-seat-arch-seat-master.rules \
   /etc/udev/rules.d/72-multi-seat-arch-seat-master.rules
