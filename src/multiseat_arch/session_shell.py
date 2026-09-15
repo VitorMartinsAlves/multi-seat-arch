@@ -79,8 +79,8 @@ def _fallback_wallpaper() -> str | None:
     return None
 
 
-def _prepare_pcmanfm_profile() -> None:
-    profile = Path.home() / ".config/pcmanfm-qt/lxqt/settings.conf"
+def _prepare_pcmanfm_profile(profile_name: str, seed_wallpaper: str | None) -> None:
+    profile = Path.home() / f".config/pcmanfm-qt/{profile_name}/settings.conf"
     parser = configparser.ConfigParser(interpolation=None)
     parser.optionxform = str
     if profile.exists():
@@ -91,15 +91,23 @@ def _prepare_pcmanfm_profile() -> None:
             parser.optionxform = str
     if not parser.has_section("Desktop"):
         parser.add_section("Desktop")
-    wallpaper = _plasma_wallpaper() or _fallback_wallpaper()
-    if wallpaper:
-        parser.set("Desktop", "Wallpaper", wallpaper)
-        parser.set("Desktop", "WallpaperMode", "zoom")
+
+    current = parser.get("Desktop", "Wallpaper", fallback="").strip()
+    if not current or not Path(_decode_wallpaper(current)).is_file():
+        if seed_wallpaper:
+            parser.set("Desktop", "Wallpaper", seed_wallpaper)
+            parser.set("Desktop", "WallpaperMode", "zoom")
     parser.set("Desktop", "BgColor", "#202020")
     parser.set("Desktop", "FgColor", "#ffffff")
     profile.parent.mkdir(parents=True, exist_ok=True)
     with profile.open("w", encoding="utf-8") as handle:
         parser.write(handle, space_around_delimiters=False)
+
+
+def _prepare_pcmanfm_profiles() -> None:
+    wallpaper = _plasma_wallpaper() or _fallback_wallpaper()
+    for profile_name in ("lxqt", "lxqtwayland"):
+        _prepare_pcmanfm_profile(profile_name, wallpaper)
 
 
 def main() -> int:
@@ -110,7 +118,7 @@ def main() -> int:
     os.environ.setdefault("MOZ_ENABLE_WAYLAND", "1")
 
     _import_activation_environment()
-    _prepare_pcmanfm_profile()
+    _prepare_pcmanfm_profiles()
 
     lxqt_session = shutil.which("lxqt-session")
     if lxqt_session:
