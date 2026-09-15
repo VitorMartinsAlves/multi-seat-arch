@@ -7,7 +7,7 @@ from .model import InputDevice
 
 _USEFUL_KINDS = {"keyboard", "mouse", "touchpad", "gamepad"}
 _SUFFIX_RE = re.compile(
-    r"\s+(?:system control|consumer control|keyboard|mouse|touchpad)$",
+    r"\s+(?:system control|consumer control)$",
     re.IGNORECASE,
 )
 
@@ -31,11 +31,7 @@ class DeviceGroup:
 def clean_device_name(name: str) -> str:
     """Remove common composite-interface suffixes without hiding the product name."""
     cleaned = name.strip()
-    previous = None
-    while previous != cleaned:
-        previous = cleaned
-        cleaned = _SUFFIX_RE.sub("", cleaned).strip()
-    return cleaned or name.strip()
+    return _SUFFIX_RE.sub("", cleaned).strip() or cleaned
 
 
 def icon_names(kind: str, bus: str = "") -> tuple[str, ...]:
@@ -101,7 +97,13 @@ def group_devices(
         # "Consumer Control" / "System Control" to the product name.
         name = min(names, key=lambda value: (len(value), value.lower()))
         kinds = {item.kind for item in members}
-        kind = members[0].kind if len(kinds) == 1 else "other"
+        if len(kinds) == 1:
+            kind = members[0].kind
+        else:
+            # Composite gaming devices may expose media keys as a second kind.
+            # Prefer a user-facing physical-device icon over the generic fallback.
+            priority = ("touchpad", "mouse", "keyboard", "gamepad", "other")
+            kind = next(value for value in priority if value in kinds)
         buses = {item.bus for item in members if item.bus}
         bus = members[0].bus if len(buses) <= 1 else "misto"
         seats = {item.seat for item in members}
