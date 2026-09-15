@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from .theme import apply_kde_like_theme
+
 
 def _run(command: list[str]) -> None:
     try:
@@ -29,7 +31,13 @@ def _ensure_session_environment() -> None:
     os.environ.setdefault("XDG_SESSION_DESKTOP", "LXQt")
     os.environ.setdefault("XDG_SESSION_TYPE", "wayland")
     os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
+    os.environ.setdefault("QT_STYLE_OVERRIDE", "Breeze")
+    os.environ.setdefault("GTK_THEME", "Breeze-Dark")
+    os.environ.setdefault("XCURSOR_THEME", "breeze_cursors")
+    os.environ.setdefault("XCURSOR_SIZE", "24")
     os.environ.setdefault("MOZ_ENABLE_WAYLAND", "1")
+    os.environ.setdefault("NIXOS_OZONE_WL", "1")
+    os.environ.setdefault("OZONE_PLATFORM", "wayland")
 
 
 def _import_activation_environment() -> None:
@@ -43,7 +51,13 @@ def _import_activation_environment() -> None:
         "XDG_SESSION_TYPE",
         "XDG_SEAT",
         "QT_QPA_PLATFORM",
+        "QT_STYLE_OVERRIDE",
+        "GTK_THEME",
+        "XCURSOR_THEME",
+        "XCURSOR_SIZE",
         "MOZ_ENABLE_WAYLAND",
+        "NIXOS_OZONE_WL",
+        "OZONE_PLATFORM",
     ]
     available = [name for name in names if os.environ.get(name)]
     if not available:
@@ -77,6 +91,8 @@ def _plasma_wallpaper() -> str | None:
 
 def _fallback_wallpaper() -> str | None:
     candidates = [
+        Path("/usr/share/wallpapers/Next/contents/images/1920x1080.jpg"),
+        Path("/usr/share/wallpapers/Next/contents/images/2560x1440.jpg"),
         Path("/usr/share/lxqt/wallpapers/origami-dark-labwc.png"),
         Path("/usr/share/lxqt/wallpapers/waves-logo.png"),
         Path("/usr/share/backgrounds"),
@@ -114,8 +130,8 @@ def _prepare_pcmanfm_profile(profile_name: str, seed_wallpaper: str | None) -> N
         if seed_wallpaper:
             parser.set("Desktop", "Wallpaper", seed_wallpaper)
             parser.set("Desktop", "WallpaperMode", "zoom")
-    parser.set("Desktop", "BgColor", "#202020")
-    parser.set("Desktop", "FgColor", "#ffffff")
+    parser.set("Desktop", "BgColor", "#202124")
+    parser.set("Desktop", "FgColor", "#eff0f1")
     profile.parent.mkdir(parents=True, exist_ok=True)
     with profile.open("w", encoding="utf-8") as handle:
         parser.write(handle, space_around_delimiters=False)
@@ -129,21 +145,22 @@ def _prepare_pcmanfm_profiles() -> None:
 
 def _ensure_chromium_wayland_flags() -> None:
     """Prefer native Wayland for Chromium-family launchers without clobbering user flags."""
-    flag = "--ozone-platform-hint=auto"
+    flags = ("--ozone-platform-hint=auto", "--enable-features=UseOzonePlatform")
     for filename in ("chromium-flags.conf", "chrome-flags.conf"):
         path = Path.home() / ".config" / filename
         try:
             existing = path.read_text(encoding="utf-8") if path.exists() else ""
         except OSError:
             continue
-        if "--ozone-platform" in existing:
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
         text = existing
-        if text and not text.endswith("\n"):
-            text += "\n"
-        text += flag + "\n"
+        for flag in flags:
+            if flag.split("=", 1)[0] in text:
+                continue
+            if text and not text.endswith("\n"):
+                text += "\n"
+            text += flag + "\n"
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
         except OSError:
             pass
@@ -165,12 +182,7 @@ def _command_result(command: list[str]) -> tuple[int, str]:
 
 
 def _write_session_health() -> None:
-    """Record app-sandbox readiness from inside the actual seat session.
-
-    This scales to any seat/user and catches the class of failures that cannot
-    be detected by the installer running outside the PAM-created compositor
-    service (Steam/pressure-vessel, Chromium, Flatpak, Electron, etc.).
-    """
+    """Record graphics/sandbox readiness from inside the actual seat session."""
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
     path = runtime / "multi-seat-arch-health.log"
     lines = [
@@ -178,6 +190,8 @@ def _write_session_health() -> None:
         f"seat={os.environ.get('XDG_SEAT', '')}",
         f"wayland={os.environ.get('WAYLAND_DISPLAY', '')}",
         f"display={os.environ.get('DISPLAY', '')}",
+        f"qt_style={os.environ.get('QT_STYLE_OVERRIDE', '')}",
+        f"gtk_theme={os.environ.get('GTK_THEME', '')}",
     ]
     try:
         status = Path("/proc/self/status").read_text(encoding="utf-8")
@@ -212,9 +226,10 @@ def _write_session_health() -> None:
 
 def main() -> int:
     _ensure_session_environment()
-    _import_activation_environment()
+    apply_kde_like_theme()
     _prepare_pcmanfm_profiles()
     _ensure_chromium_wayland_flags()
+    _import_activation_environment()
     _write_session_health()
 
     lxqt_session = shutil.which("lxqt-session")
@@ -222,7 +237,7 @@ def main() -> int:
         os.execv(lxqt_session, [lxqt_session])
 
     children: list[subprocess.Popen] = []
-    for command in (["pcmanfm-qt", "--desktop"], ["lxqt-panel"], ["xfce4-terminal"]):
+    for command in (["pcmanfm-qt", "--desktop"], ["lxqt-panel"], ["qterminal"]):
         binary = shutil.which(command[0])
         if binary:
             try:
