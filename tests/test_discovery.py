@@ -5,6 +5,7 @@ from multiseat_arch.discovery import (
     connector_lease_name,
     parse_libinput,
     parse_udev_properties,
+    physical_group_key,
     stable_device_key,
 )
 
@@ -91,6 +92,22 @@ class DiscoveryTests(unittest.TestCase):
             {**common, "ID_USB_INTERFACE_NUM": "01"},
         )
         self.assertNotEqual(first, second)
+
+    def test_composite_interfaces_share_visual_group(self):
+        first = physical_group_key(
+            "/sys/devices/a",
+            {"ID_PATH": "pci-0000:00:14.0-usb-0:4.2:1.0-event-kbd"},
+        )
+        second = physical_group_key(
+            "/sys/devices/b",
+            {"ID_PATH": "pci-0000:00:14.0-usb-0:4.2:1.1-event-mouse"},
+        )
+        other_port = physical_group_key(
+            "/sys/devices/c",
+            {"ID_PATH": "pci-0000:00:14.0-usb-0:7.1:1.0-event-kbd"},
+        )
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, other_port)
 
     def test_devices_without_serial_remain_bound_to_physical_path(self):
         key_a = stable_device_key(
