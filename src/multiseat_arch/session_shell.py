@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 
 def _run(command: list[str]) -> None:
@@ -19,6 +20,7 @@ def _import_activation_environment() -> None:
     names = [
         "WAYLAND_DISPLAY",
         "DISPLAY",
+        "DBUS_SESSION_BUS_ADDRESS",
         "XDG_CURRENT_DESKTOP",
         "XDG_SESSION_DESKTOP",
         "XDG_SESSION_TYPE",
@@ -35,6 +37,14 @@ def _import_activation_environment() -> None:
         _run(["systemctl", "--user", "import-environment", *available])
 
 
+def _decode_wallpaper(value: str) -> str:
+    value = value.strip()
+    if value.startswith("file://"):
+        parsed = urlparse(value)
+        return unquote(parsed.path)
+    return unquote(value)
+
+
 def _plasma_wallpaper() -> str | None:
     config = Path.home() / ".config/plasma-org.kde.plasma.desktop-appletsrc"
     try:
@@ -42,7 +52,7 @@ def _plasma_wallpaper() -> str | None:
     except OSError:
         return None
     for match in re.finditer(r"^Image=(.+)$", text, flags=re.MULTILINE):
-        value = match.group(1).strip().removeprefix("file://")
+        value = _decode_wallpaper(match.group(1))
         if value and Path(value).is_file():
             return value
     return None
@@ -50,6 +60,7 @@ def _plasma_wallpaper() -> str | None:
 
 def _fallback_wallpaper() -> str | None:
     candidates = [
+        Path("/usr/share/lxqt/wallpapers/origami-dark-labwc.png"),
         Path("/usr/share/lxqt/wallpapers/waves-logo.png"),
         Path("/usr/share/backgrounds"),
         Path("/usr/share/wallpapers"),
