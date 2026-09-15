@@ -46,16 +46,27 @@ class BackendTests(unittest.TestCase):
                 backend.start(config)
             schedule.assert_not_called()
 
+    def test_wait_assignments_accepts_paths_reported_by_logind(self):
+        assignment = ("seat-card1-HDMI-A-1", "/sys/devices/input/input6")
+        with patch.object(
+            backend,
+            "_seat_status",
+            return_value="seat-card1-HDMI-A-1\n  └─/sys/devices/input/input6\n",
+        ):
+            backend._wait_assignments([assignment], timeout=1.0)
+
     def test_wait_assignments_detects_failed_assignment(self):
         with (
-            patch.object(backend, "_udev_seat", return_value="seat0"),
+            patch.object(backend, "_seat_status", return_value="seat0\n"),
             patch.object(backend.time, "monotonic", side_effect=[0.0, 0.0, 10.0]),
             patch.object(backend.time, "sleep"),
         ):
             with self.assertRaises(RuntimeError):
-                backend._wait_assignments([("seat-a", "/sys/devices/a")], timeout=1.0)
+                backend._wait_assignments(
+                    [("seat-card1-HDMI-A-1", "/sys/devices/a")], timeout=1.0
+                )
 
-    def test_sync_routes_drm_master_and_inputs_to_runtime_seats(self):
+    def test_sync_routes_only_inputs_through_logind(self):
         config = self._config()
         devices = [
             InputDevice("Mouse", "mouse", "/dev/input/event1", "/sys/devices/mouse", "usb", "input-111111111111111111111111"),
@@ -68,7 +79,6 @@ class BackendTests(unittest.TestCase):
                 patch.object(backend.os, "geteuid", return_value=0),
                 patch.object(backend, "validate", return_value=[]),
                 patch.object(backend, "discover_inputs", return_value=devices),
-                patch.object(backend, "_connector_syspath", side_effect=["/sys/devices/drm-hdmi", "/sys/devices/drm-edp"]),
                 patch.object(backend, "_stop_units"),
                 patch.object(backend, "flush_inputs"),
                 patch.object(backend, "_attach") as attach,
@@ -79,18 +89,16 @@ class BackendTests(unittest.TestCase):
                 backend.sync_devices_now(config)
                 self.assertEqual(
                     attach.call_args_list,
-                    [
-                        call("seat-card1-HDMI-A-1", "/sys/devices/drm-hdmi"),
-                        call("seat-card1-eDP-1", "/sys/devices/drm-edp"),
-                        call("seat-card1-HDMI-A-1", "/sys/devices/mouse"),
-                    ],
+                    [call("seat-card1-HDMI-A-1", "/sys/devices/mouse")],
                 )
                 self.assertEqual(proxy.call_count, 2)
                 proxy.assert_any_call(devices[1], config.devices[1], config)
                 proxy.assert_any_call(devices[2], config.devices[2], config)
-                wait_assignments.assert_called_once()
+                wait_assignments.assert_called_once_with(
+                    [("seat-card1-HDMI-A-1", "/sys/devices/mouse")]
+                )
 
-    def test_disconnected_rule_keeps_drm_seats_but_starts_no_input_proxy(self):
+    def test_disconnected_rules_do_not_attach_drm_connector_to_logind(self):
         config = self._config()
         with tempfile.TemporaryDirectory() as directory:
             with (
@@ -98,17 +106,17 @@ class BackendTests(unittest.TestCase):
                 patch.object(backend.os, "geteuid", return_value=0),
                 patch.object(backend, "validate", return_value=[]),
                 patch.object(backend, "discover_inputs", return_value=[]),
-                patch.object(backend, "_connector_syspath", side_effect=["/sys/devices/drm-hdmi", "/sys/devices/drm-edp"]),
                 patch.object(backend, "_stop_units"),
                 patch.object(backend, "flush_inputs"),
                 patch.object(backend, "_attach") as attach,
                 patch.object(backend, "_start_proxy") as proxy,
                 patch.object(backend, "_run", return_value=Mock(stdout="", returncode=0)),
-                patch.object(backend, "_wait_assignments"),
+                patch.object(backend, "_wait_assignments") as wait_assignments,
             ):
                 backend.sync_devices_now(config)
-                self.assertEqual(attach.call_count, 2)
+                attach.assert_not_called()
                 proxy.assert_not_called()
+                wait_assignments.assert_not_called()
 
     def test_failed_activation_persists_error_and_rolls_back(self):
         config = self._config()

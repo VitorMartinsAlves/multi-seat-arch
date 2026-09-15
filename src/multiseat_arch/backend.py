@@ -96,17 +96,6 @@ def _seat_by_logical_name(config: Config, logical_name: str) -> Seat:
     raise RuntimeError(f"Seat lógico inexistente: {logical_name}")
 
 
-def _connector_syspath(seat: Seat) -> str:
-    path = Path("/sys/class/drm") / seat.connector
-    try:
-        resolved = str(path.resolve(strict=True))
-    except OSError as exc:
-        raise RuntimeError(f"Conector não encontrado: {seat.connector}") from exc
-    if not resolved.startswith("/sys/devices/"):
-        raise RuntimeError(f"Syspath DRM inválido: {resolved}")
-    return resolved
-
-
 def doctor(config: Config | None = None) -> list[Check]:
     checks = [
         Check(command_exists("systemctl"), "systemctl"),
@@ -294,15 +283,18 @@ def flush_inputs() -> None:
     _run(["udevadm", "settle", "--timeout=5"], check=False)
 
 
-def _udev_seat(syspath: str) -> str:
-    output = _run(
-        ["udevadm", "info", "--query=property", "--path", syspath],
-        check=False,
-    ).stdout
-    for line in output.splitlines():
-        if line.startswith("ID_SEAT="):
-            return line.split("=", 1)[1].strip()
-    return "seat0"
+def _seat_status(seat: str) -> str:
+    """Return logind's authoritative device tree for a seat.
+
+    `loginctl attach` persists udev rules, but querying ID_SEAT directly from the
+    same sysfs node is not reliable on current systemd/udev releases.  The
+    public `loginctl seat-status` view is what logind itself believes is attached
+    and is therefore the correct postcondition to verify.
+    """
+    result = _run(["loginctl", "seat-status", seat], check=False)
+    if result.returncode:
+        return ""
+    return result.stdout
 
 
 def _wait_assignments(
@@ -311,16 +303,17 @@ def _wait_assignments(
     deadline = time.monotonic() + timeout
     pending = set(assignments)
     while pending and time.monotonic() < deadline:
+        status_by_seat = {seat: _seat_status(seat) for seat, _path in pending}
         pending = {
             (seat, syspath)
             for seat, syspath in pending
-            if _udev_seat(syspath) != seat
+            if syspath not in status_by_seat.get(seat, "")
         }
         if pending:
             time.sleep(0.1)
     if pending:
         detail = ", ".join(f"{path} -> {seat}" for seat, path in sorted(pending))
-        raise RuntimeError("Falha ao atribuir devices ao logind: " + detail)
+        raise RuntimeError("logind não confirmou os devices no seat-status: " + detail)
 
 
 def _attach(seat: str, syspath: str) -> None:
@@ -467,7 +460,7 @@ def resolve_device_rules(config: Config) -> list[tuple[DeviceRule, InputDevice]]
 
 
 def sync_devices_now(config: Config) -> None:
-    """Apply peripheral routing using the same runtime seat naming as upstream."""
+    """Apply peripheral routing using connector-derived runtime seat names."""
     if os.geteuid() != 0:
         raise PermissionError("Execute como root.")
     errors = validate(config)
@@ -482,14 +475,12 @@ def sync_devices_now(config: Config) -> None:
     flush_inputs()
     assignments: list[tuple[str, str]] = []
 
-    # First attach each DRM connector to its runtime seat. This mirrors the
-    # upstream implementation and gives logind a seat master before libinput
-    # starts. The DRM lease itself is still supplied by drm-lease-manager.
-    for seat in active_seats(config):
-        runtime = runtime_seat_name(seat)
-        drm_path = _connector_syspath(seat)
-        _attach(runtime, drm_path)
-        assignments.append((runtime, drm_path))
+    # DRM ownership is deliberately NOT routed through logind here.  The
+    # patched wlroots backend opens the connector's KMS lease directly through
+    # DRM_LEASE.  A single physical card cannot be split into two normal logind
+    # graphics masters, and trying to validate leased connector nodes via
+    # ID_SEAT caused false failures on systemd 261.  logind is used only for
+    # input routing; drm-lease-manager owns the output split.
 
     # v1 compatibility/migration path.
     for seat in active_seats(config):
@@ -508,6 +499,9 @@ def sync_devices_now(config: Config) -> None:
         elif rule.mode in {"shared", "disabled"}:
             _start_proxy(device, rule, config)
 
+    # loginctl persists seat assignments as udev rules.  Trigger input change
+    # events explicitly before asking logind for its authoritative seat tree.
+    _run(["udevadm", "trigger", "--subsystem-match=input", "--action=change"], check=False)
     _run(["udevadm", "settle", "--timeout=5"], check=False)
     if assignments:
         _wait_assignments(assignments)
@@ -602,8 +596,6 @@ def _start_user_apps(
                 no_block=True,
             )
         except Exception:
-            # Desktop helpers are convenience only; never tear down a working
-            # multiseat because a panel/file-manager/terminal failed to launch.
             continue
 
 
