@@ -1,6 +1,10 @@
+import importlib.util
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+if importlib.util.find_spec("evdev") is None:
+    raise unittest.SkipTest("python-evdev não está instalado")
 
 from multiseat_arch import input_proxy
 
