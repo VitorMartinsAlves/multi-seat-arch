@@ -25,6 +25,7 @@ class InputDevice:
     bus: str = ""
     key: str = ""
     seat: str = "seat0"
+    group_key: str = ""
 
 
 @dataclass(slots=True)
