@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from .app_compat import create_session_launcher, hide_power_pseudo_apps, prefer_xwayland_for_chromium
 from .theme import apply_kde_like_theme
 
 
@@ -36,8 +37,6 @@ def _ensure_session_environment() -> None:
     os.environ.setdefault("XCURSOR_THEME", "breeze_cursors")
     os.environ.setdefault("XCURSOR_SIZE", "24")
     os.environ.setdefault("MOZ_ENABLE_WAYLAND", "1")
-    os.environ.setdefault("NIXOS_OZONE_WL", "1")
-    os.environ.setdefault("OZONE_PLATFORM", "wayland")
 
 
 def _import_activation_environment() -> None:
@@ -56,8 +55,6 @@ def _import_activation_environment() -> None:
         "XCURSOR_THEME",
         "XCURSOR_SIZE",
         "MOZ_ENABLE_WAYLAND",
-        "NIXOS_OZONE_WL",
-        "OZONE_PLATFORM",
     ]
     available = [name for name in names if os.environ.get(name)]
     if not available:
@@ -124,7 +121,6 @@ def _prepare_pcmanfm_profile(profile_name: str, seed_wallpaper: str | None) -> N
             parser.optionxform = str
     if not parser.has_section("Desktop"):
         parser.add_section("Desktop")
-
     current = parser.get("Desktop", "Wallpaper", fallback="").strip()
     if not current or not Path(_decode_wallpaper(current)).is_file():
         if seed_wallpaper:
@@ -143,46 +139,15 @@ def _prepare_pcmanfm_profiles() -> None:
         _prepare_pcmanfm_profile(profile_name, wallpaper)
 
 
-def _ensure_chromium_wayland_flags() -> None:
-    """Prefer native Wayland for Chromium-family launchers without clobbering user flags."""
-    flags = ("--ozone-platform-hint=auto", "--enable-features=UseOzonePlatform")
-    for filename in ("chromium-flags.conf", "chrome-flags.conf"):
-        path = Path.home() / ".config" / filename
-        try:
-            existing = path.read_text(encoding="utf-8") if path.exists() else ""
-        except OSError:
-            continue
-        text = existing
-        for flag in flags:
-            if flag.split("=", 1)[0] in text:
-                continue
-            if text and not text.endswith("\n"):
-                text += "\n"
-            text += flag + "\n"
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
-        except OSError:
-            pass
-
-
 def _command_result(command: list[str]) -> tuple[int, str]:
     try:
-        proc = subprocess.run(
-            command,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=8,
-            check=False,
-        )
+        proc = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=8, check=False)
         return proc.returncode, proc.stdout.strip()
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 127, str(exc)
 
 
 def _write_session_health() -> None:
-    """Record graphics/sandbox readiness from inside the actual seat session."""
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
     path = runtime / "multi-seat-arch-health.log"
     lines = [
@@ -201,23 +166,15 @@ def _write_session_health() -> None:
                 lines.append(f"{key}={match.group(1).strip()}")
     except OSError as exc:
         lines.append(f"status_error={exc}")
-
-    unshare = shutil.which("unshare")
-    if unshare:
-        code, output = _command_result([unshare, "--user", "--map-root-user", "/usr/bin/true"])
-        lines.append(f"unshare_rc={code}")
+    for name in ("unshare", "bwrap"):
+        binary = shutil.which(name)
+        if not binary:
+            continue
+        command = [binary, "--user", "--map-root-user", "/usr/bin/true"] if name == "unshare" else [binary, "--unshare-user", "--unshare-pid", "--ro-bind", "/", "/", "/usr/bin/true"]
+        code, output = _command_result(command)
+        lines.append(f"{name}_rc={code}")
         if output:
-            lines.append(f"unshare_output={output}")
-
-    bwrap = shutil.which("bwrap")
-    if bwrap:
-        code, output = _command_result(
-            [bwrap, "--unshare-user", "--unshare-pid", "--ro-bind", "/", "/", "/usr/bin/true"]
-        )
-        lines.append(f"bwrap_rc={code}")
-        if output:
-            lines.append(f"bwrap_output={output}")
-
+            lines.append(f"{name}_output={output}")
     try:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except OSError:
@@ -226,11 +183,16 @@ def _write_session_health() -> None:
 
 def main() -> int:
     _ensure_session_environment()
+    prefer_xwayland_for_chromium()
+    create_session_launcher()
+    hide_power_pseudo_apps()
     apply_kde_like_theme()
     _prepare_pcmanfm_profiles()
-    _ensure_chromium_wayland_flags()
     _import_activation_environment()
     _write_session_health()
+
+    if shutil.which("update-desktop-database"):
+        _run(["update-desktop-database", str(Path.home() / ".local/share/applications")])
 
     lxqt_session = shutil.which("lxqt-session")
     if lxqt_session:
