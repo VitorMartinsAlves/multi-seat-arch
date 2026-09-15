@@ -2,37 +2,46 @@ diff --git a/backend/session/session.c b/backend/session/session.c
 index c4fde1a4..f9d5a999 100644
 --- a/backend/session/session.c
 +++ b/backend/session/session.c
-@@ -311,6 +311,29 @@ struct wlr_device *wlr_session_open_file(struct wlr_session *session,
- 	const char *path) {
+@@ -2,6 +2,7 @@
+ 
+ #include <assert.h>
++#include <fcntl.h>
+ #include <libudev.h>
+ #include <stdarg.h>
+ #include <stddef.h>
+@@ -324,6 +325,30 @@ void wlr_session_destroy(struct wlr_session *session) {
+ 
+ struct wlr_device *wlr_session_open_file(struct wlr_session *session,
+ 		const char *path) {
 +	/*
-+	 * In the DRM-lease multiseat mode, logind can expose the correct seat
-+	 * topology while still refusing open_device() for input nodes because the
-+	 * transient compositor session does not own a conventional active VT.
++	 * In DRM-lease multiseat mode, logind can expose the right seat topology
++	 * while still refusing open_device() for evdev nodes because a transient
++	 * compositor session does not own a conventional active VT.
 +	 *
-+	 * The launcher grants the seat user an ACL on only the event nodes assigned
-+	 * to that seat. Open those nodes directly and keep libinput's udev seat
-+	 * filtering intact. GPU access continues to use the normal libseat/DRM lease
-+	 * paths below.
++	 * The launcher grants the seat user an ACL only on the event nodes assigned
++	 * to that seat. Open those nodes directly while keeping libinput's udev seat
++	 * filtering. GPU access continues through libseat/DRM leasing below.
 +	 */
 +	const char *drm_lease = getenv("DRM_LEASE");
 +	if (drm_lease && strncmp(path, "/dev/input/event", 16) == 0) {
-+		int fd = open(path, O_RDWR | O_CLOEXEC | O_NONBLOCK);
-+		if (fd < 0) {
-+			wlr_log_errno(WLR_ERROR, "Failed to directly open multiseat input %s", path);
++		int input_fd = open(path, O_RDWR | O_CLOEXEC | O_NONBLOCK);
++		if (input_fd < 0) {
++			wlr_log_errno(WLR_ERROR,
++				"Failed to directly open multiseat input %s", path);
 +			return NULL;
 +		}
-+		struct wlr_device *dev = wlr_fd_to_device(session, fd);
-+		if (!dev) {
-+			close(fd);
++		struct wlr_device *input_dev = wlr_fd_to_device(session, input_fd);
++		if (!input_dev) {
++			close(input_fd);
 +			return NULL;
 +		}
-+		return dev;
++		return input_dev;
 +	}
 +
- 	int fd, device_id;
- 	if ((device_id = libseat_open_device(session->seat_handle, path, &fd)) == -1) {
- 		wlr_log_errno(WLR_ERROR, "Failed to open device: '%s'", path);
-@@ -365,7 +388,9 @@ struct wlr_device *wlr_fd_to_device(struct wlr_session *session, int fd) { // bo
+ 	int fd;
+ 	int device_id = libseat_open_device(session->seat_handle, path, &fd);
+ 	if (device_id == -1) {
+@@ -365,7 +390,9 @@ struct wlr_device *wlr_fd_to_device(struct wlr_session *session, int fd) { // bo
  void wlr_session_close_file(struct wlr_session *session,
  		struct wlr_device *dev) {
 -	dlm_release_lease(dev->drm_lease);
