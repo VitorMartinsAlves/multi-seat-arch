@@ -17,13 +17,7 @@ def _labwc_command(compositor: str, config_dir: str | None = None) -> list[str]:
 
 
 def _prepare_labwc_config(seat_name: str, uid: int, gid: int) -> str:
-    """Create an ephemeral Labwc config whose autostart runs after DISPLAY exists.
-
-    Labwc documents that its autostart script is executed after WAYLAND_DISPLAY
-    and, when XWayland support is compiled in, DISPLAY have been defined. Steam
-    and Chromium-family launchers therefore inherit a usable graphical session
-    instead of starting from Labwc's earlier -s startup hook.
-    """
+    """Create an ephemeral Labwc config whose autostart runs after DISPLAY exists."""
     session = shutil.which("multi-seat-arch-session")
     if not session:
         raise RuntimeError("multi-seat-arch-session não encontrado; reinstale o pacote.")
@@ -41,6 +35,33 @@ def _prepare_labwc_config(seat_name: str, uid: int, gid: int) -> str:
     os.chown(base, uid, gid)
     os.chown(autostart, uid, gid)
     return str(base)
+
+
+def _seat_service_properties() -> list[str]:
+    """Properties shared by every graphical seat service.
+
+    systemd + PAM can preserve root capabilities while opening a PAM session
+    before dropping to User=. bubblewrap (used by Steam pressure-vessel) and
+    Chromium intentionally reject that state. The compositor does not need
+    Linux capabilities because DRM access comes from the lease and evdev access
+    comes from explicit per-seat ACLs, so make the user session capability-free.
+
+    Keep namespaces explicitly available: Steam, Chromium, Flatpak and similar
+    sandboxed applications create their own user/mount/pid namespaces.
+    """
+    return [
+        "PAMName=login",
+        "UMask=0006",
+        "CapabilityBoundingSet=",
+        "AmbientCapabilities=",
+        "RestrictNamespaces=no",
+        "PrivateUsers=no",
+        "NoNewPrivileges=no",
+        "Restart=on-failure",
+        "RestartSec=1s",
+        "TimeoutStartSec=20s",
+        "ExecStartPre=/bin/sleep 0.1",
+    ]
 
 
 def install(backend: ModuleType) -> None:
@@ -89,14 +110,7 @@ def install(backend: ModuleType) -> None:
             _labwc_command(compositor, labwc_config),
             uid=uid,
             env=env,
-            properties=[
-                "PAMName=login",
-                "UMask=0006",
-                "Restart=on-failure",
-                "RestartSec=1s",
-                "TimeoutStartSec=20s",
-                "ExecStartPre=/bin/sleep 0.1",
-            ],
+            properties=_seat_service_properties(),
         )
         backend._wait_for_wayland(uid, f"{unit}.service")
 
