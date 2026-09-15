@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import backend
 from . import config as cfg
@@ -30,6 +31,9 @@ from .status import runtime_status
 from .transitions import before_activation, before_restore
 from .users import create_seat_user
 
+PLASMA_EXPERIMENTAL = "/usr/local/bin/kwin-wayland-msa"
+LABWC_STABLE = "/usr/local/bin/labwc"
+
 
 def _slots_dict(obj):
     return {key: getattr(obj, key) for key in obj.__slots__}
@@ -41,6 +45,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("discover")
     sub.add_parser("doctor")
     sub.add_parser("status")
+    sub.add_parser("plasma-enable", help="ativa o backend KWin/Plasma experimental")
+    sub.add_parser("plasma-disable", help="volta ao backend Labwc estável")
 
     validate_parser = sub.add_parser("validate")
     validate_parser.add_argument("config")
@@ -122,6 +128,12 @@ def _apply_sync_transaction(config) -> None:
             ) from original
 
 
+def _set_compositor(path: str) -> None:
+    config = cfg.load()
+    config.compositor = path
+    cfg.save(config)
+
+
 def main() -> int:
     args = _build_parser().parse_args()
 
@@ -148,6 +160,20 @@ def main() -> int:
 
         if args.cmd == "status":
             print(json.dumps(runtime_status(), indent=2, ensure_ascii=False))
+            return 0
+
+        if args.cmd == "plasma-enable":
+            if not Path(PLASMA_EXPERIMENTAL).is_file():
+                raise RuntimeError(
+                    "KWin experimental não está instalado. Rode scripts/build-kwin-plasma.sh primeiro."
+                )
+            _set_compositor(PLASMA_EXPERIMENTAL)
+            print("Backend Plasma/KWin experimental ativado na configuração.")
+            return 0
+
+        if args.cmd == "plasma-disable":
+            _set_compositor(LABWC_STABLE)
+            print("Backend Labwc estável restaurado na configuração.")
             return 0
 
         if args.cmd == "create-user":
