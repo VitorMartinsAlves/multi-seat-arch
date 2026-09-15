@@ -50,23 +50,23 @@ def patch_tree(root: Path) -> None:
         return
 
     include_anchor = "#include <QDBusUnixFileDescriptor>"
-    # Some releases include this header through the .h instead. Place the C
-    # client include after another stable system/include area if necessary.
+    include_block = (
+        include_anchor
+        + "\n#include <libdlmclient/dlmclient.h>"
+        + "\n#include <cerrno>"
+        + "\n#include <cstring>"
+        + "\n#include <unordered_map>"
+    )
     if include_anchor in text:
-        text = replace_once(
-            text,
-            include_anchor,
-            include_anchor + "\n#include <libdlmclient/dlmclient.h>\n#include <unordered_map>",
-            "dlm include",
-        )
+        text = replace_once(text, include_anchor, include_block, "dlm include")
     else:
         namespace_anchor = "namespace KWin\n{"
-        text = replace_once(
-            text,
-            namespace_anchor,
-            "#include <libdlmclient/dlmclient.h>\n#include <unordered_map>\n\n" + namespace_anchor,
-            "dlm include fallback",
+        fallback = (
+            "#include <libdlmclient/dlmclient.h>\n"
+            "#include <cerrno>\n#include <cstring>\n#include <unordered_map>\n\n"
+            + namespace_anchor
         )
+        text = replace_once(text, namespace_anchor, fallback, "dlm include fallback")
 
     namespace_anchor = "namespace KWin\n{"
     globals_block = f'''namespace KWin\n{{\n\n// {MARKER}\n// Keep one lease handle for every duplicated fd handed to KWin. The handle\n// owns the manager-side lease; the duplicated fd is what KWin uses for KMS.\nstatic std::unordered_map<int, dlm_lease *> s_multiSeatLeases;\n'''
@@ -82,7 +82,6 @@ def patch_tree(root: Path) -> None:
 
     logind.write_text(text, encoding="utf-8")
 
-    # Fail loudly if the transformation only half-applied.
     final = logind.read_text(encoding="utf-8")
     required = [MARKER, "dlm_get_lease", "KWIN_DRM_LEASE", "s_multiSeatLeases"]
     missing = [needle for needle in required if needle not in final]
