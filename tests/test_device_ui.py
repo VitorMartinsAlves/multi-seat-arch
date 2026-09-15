@@ -68,9 +68,14 @@ class DeviceUiTests(unittest.TestCase):
 
     def test_system_buttons_are_not_auto_assigned(self):
         power = device("Power Button", "other", "input-power", bus="platform")
+        keyboard_flagged_power = device(
+            "Power Button", "keyboard", "input-power-kbd", bus="platform"
+        )
         keyboard = device("USB Keyboard", "keyboard", "input-keyboard")
         self.assertTrue(is_system_device(power))
         self.assertFalse(is_useful_input(power))
+        self.assertTrue(is_system_device(keyboard_flagged_power))
+        self.assertFalse(is_useful_input(keyboard_flagged_power))
         self.assertTrue(is_useful_input(keyboard))
 
     def test_clean_name_removes_only_control_suffix(self):
