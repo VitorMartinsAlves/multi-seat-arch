@@ -1,4 +1,4 @@
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 
 # Keep target-host compatibility fixes active regardless of which entry point
 # imports the package (CLI, GUI helpers, hotplug watcher or tests).
