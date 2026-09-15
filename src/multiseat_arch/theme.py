@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import re
 import shutil
 from pathlib import Path
 
@@ -134,17 +135,32 @@ def ensure_panel_backend(home: Path | None = None) -> None:
     path = home / ".config/lxqt/panel.conf"
     if not path.exists():
         return
-    parser = configparser.ConfigParser(interpolation=None, delimiters=("=",))
-    parser.optionxform = str
     try:
-        parser.read(path, encoding="utf-8")
-    except (OSError, configparser.Error):
+        text = path.read_text(encoding="utf-8")
+    except OSError:
         return
-    if not parser.has_section("General"):
-        parser.add_section("General")
-    parser.set("General", "preferred_backend", "labwc:wlroots")
-    with path.open("w", encoding="utf-8") as handle:
-        parser.write(handle, space_around_delimiters=False)
+
+    backend_line = "preferred_backend=labwc:wlroots"
+    if re.search(r"^preferred_backend=.*$", text, flags=re.MULTILINE):
+        text = re.sub(
+            r"^preferred_backend=.*$",
+            backend_line,
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    elif text.startswith("[General]\n"):
+        text = "[General]\n" + backend_line + "\n" + text[len("[General]\n"):]
+    else:
+        # QSettings/LXQt panel configs may have top-level keys before the first
+        # section. Prepending [General] preserves those keys and makes the file
+        # parseable while adding only the backend selection needed on Labwc.
+        text = "[General]\n" + backend_line + "\n" + text
+
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def restore_native_lxqt_theme(home: Path | None = None) -> bool:
