@@ -36,7 +36,7 @@ class DeviceUiTests(unittest.TestCase):
             device("BY Tech Gaming Keyboard", "keyboard", "input-a", group="group-1"),
             device(
                 "BY Tech Gaming Keyboard Consumer Control",
-                "keyboard",
+                "mouse",
                 "input-b",
                 group="group-1",
             ),
@@ -50,7 +50,15 @@ class DeviceUiTests(unittest.TestCase):
         groups = group_devices(values)
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0].name, "BY Tech Gaming Keyboard")
+        self.assertEqual(groups[0].kind, "keyboard")
         self.assertEqual(groups[0].keys, ["input-a", "input-b", "input-c"])
+
+    def test_mouse_name_wins_for_mixed_hid_group(self):
+        values = [
+            device("USB Gaming Mouse", "mouse", "input-a", group="group-1"),
+            device("USB Gaming Mouse Consumer Control", "keyboard", "input-b", group="group-1"),
+        ]
+        self.assertEqual(group_devices(values)[0].kind, "mouse")
 
     def test_can_disable_grouping(self):
         values = [
@@ -66,16 +74,20 @@ class DeviceUiTests(unittest.TestCase):
         ]
         self.assertEqual(len(group_devices(values)), 2)
 
-    def test_system_buttons_are_not_auto_assigned(self):
+    def test_system_buttons_and_internal_other_are_not_auto_assigned(self):
         power = device("Power Button", "other", "input-power", bus="platform")
         keyboard_flagged_power = device(
             "Power Button", "keyboard", "input-power-kbd", bus="platform"
         )
+        wmi = device("Acer WMI hotkeys", "other", "input-wmi", bus="interno")
+        jack = device("HDA Intel PCH Front Headphone", "other", "input-jack", bus="pci")
         keyboard = device("USB Keyboard", "keyboard", "input-keyboard")
         self.assertTrue(is_system_device(power))
         self.assertFalse(is_useful_input(power))
         self.assertTrue(is_system_device(keyboard_flagged_power))
         self.assertFalse(is_useful_input(keyboard_flagged_power))
+        self.assertTrue(is_system_device(wmi))
+        self.assertTrue(is_system_device(jack))
         self.assertTrue(is_useful_input(keyboard))
 
     def test_clean_name_removes_only_control_suffix(self):
