@@ -4,16 +4,20 @@ import argparse
 import json
 import sys
 
+from . import backend
 from . import config as cfg
-from .backend import (
-    activate_now,
-    doctor,
-    restore,
-    restore_now,
-    start,
-    sync_devices_now,
-    validate,
-)
+from .runtime_patch import install as install_runtime_patch
+
+install_runtime_patch(backend)
+
+activate_now = backend.activate_now
+doctor = backend.doctor
+restore = backend.restore
+restore_now = backend.restore_now
+start = backend.start
+sync_devices_now = backend.sync_devices_now
+validate = backend.validate
+
 from .discovery import (
     discover_bluetooth_controllers,
     discover_displays,
