@@ -16,11 +16,28 @@ def _run(command: list[str]) -> None:
         pass
 
 
+def _ensure_session_environment() -> None:
+    uid = os.getuid()
+    runtime = Path(f"/run/user/{uid}")
+    if not os.environ.get("XDG_RUNTIME_DIR") and runtime.is_dir():
+        os.environ["XDG_RUNTIME_DIR"] = str(runtime)
+    bus = runtime / "bus"
+    if not os.environ.get("DBUS_SESSION_BUS_ADDRESS") and bus.exists():
+        os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+
+    os.environ.setdefault("XDG_CURRENT_DESKTOP", "LXQt")
+    os.environ.setdefault("XDG_SESSION_DESKTOP", "LXQt")
+    os.environ.setdefault("XDG_SESSION_TYPE", "wayland")
+    os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
+    os.environ.setdefault("MOZ_ENABLE_WAYLAND", "1")
+
+
 def _import_activation_environment() -> None:
     names = [
         "WAYLAND_DISPLAY",
         "DISPLAY",
         "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_RUNTIME_DIR",
         "XDG_CURRENT_DESKTOP",
         "XDG_SESSION_DESKTOP",
         "XDG_SESSION_TYPE",
@@ -110,15 +127,33 @@ def _prepare_pcmanfm_profiles() -> None:
         _prepare_pcmanfm_profile(profile_name, wallpaper)
 
 
-def main() -> int:
-    os.environ.setdefault("XDG_CURRENT_DESKTOP", "LXQt")
-    os.environ.setdefault("XDG_SESSION_DESKTOP", "LXQt")
-    os.environ.setdefault("XDG_SESSION_TYPE", "wayland")
-    os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
-    os.environ.setdefault("MOZ_ENABLE_WAYLAND", "1")
+def _ensure_chromium_wayland_flags() -> None:
+    """Prefer native Wayland for Arch Chromium/Chrome wrappers without clobbering user flags."""
+    flag = "--ozone-platform-hint=auto"
+    for filename in ("chromium-flags.conf", "chrome-flags.conf"):
+        path = Path.home() / ".config" / filename
+        try:
+            existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        except OSError:
+            continue
+        if "--ozone-platform" in existing:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = existing
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += flag + "\n"
+        try:
+            path.write_text(text, encoding="utf-8")
+        except OSError:
+            pass
 
+
+def main() -> int:
+    _ensure_session_environment()
     _import_activation_environment()
     _prepare_pcmanfm_profiles()
+    _ensure_chromium_wayland_flags()
 
     lxqt_session = shutil.which("lxqt-session")
     if lxqt_session:
