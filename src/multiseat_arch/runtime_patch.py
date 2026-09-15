@@ -11,8 +11,9 @@ def _labwc_command(compositor: str) -> list[str]:
     if Path(compositor).name == "labwc":
         command.append("--debug")
         session = shutil.which("multi-seat-arch-session")
-        if session:
-            command.extend(["-s", session])
+        if not session:
+            raise RuntimeError("multi-seat-arch-session não encontrado; reinstale o pacote.")
+        command.extend(["-s", session])
     return command
 
 
