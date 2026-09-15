@@ -20,8 +20,10 @@ class ThemeTests(unittest.TestCase):
                 "old-panel\n",
             )
             seeded = panel.read_text(encoding="utf-8")
+            self.assertIn("preferred_backend=labwc:wlroots", seeded)
             self.assertIn("position=Bottom", seeded)
-            self.assertIn("plugins=mainmenu,quicklaunch,taskbar", seeded)
+            self.assertIn("plugins=fancymenu,quicklaunch,taskbar", seeded)
+            self.assertIn("multi-seat-session.desktop", seeded)
             self.assertEqual(
                 (home / ".config/multi-seat-arch/theme-version").read_text(encoding="utf-8").strip(),
                 theme.THEME_VERSION,
@@ -32,14 +34,18 @@ class ThemeTests(unittest.TestCase):
             self.assertFalse(changed_again)
             self.assertEqual(panel.read_text(encoding="utf-8"), "user-customized\n")
 
-    def test_lxqt_profile_uses_breeze_visuals(self):
+    def test_lxqt_profile_uses_breeze_visuals_and_dark_toolkit_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             theme.apply_kde_like_theme(home)
             text = (home / ".config/lxqt/lxqt.conf").read_text(encoding="utf-8")
-            self.assertIn("icon_theme=breeze-dark", text)
+            self.assertIn("icon_theme=breeze", text)
             self.assertIn("style=Breeze", text)
             self.assertIn("highlight_color=#3daee9", text)
+            kdeglobals = (home / ".config/kdeglobals").read_text(encoding="utf-8")
+            self.assertIn("ColorScheme=BreezeDark", kdeglobals)
+            gtk = (home / ".config/gtk-3.0/settings.ini").read_text(encoding="utf-8")
+            self.assertIn("gtk-theme-name=Breeze-Dark", gtk)
 
 
 if __name__ == "__main__":
