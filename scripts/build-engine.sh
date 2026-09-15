@@ -17,7 +17,7 @@ pacman -S --needed --noconfirm \
   git make meson ninja wget gcc cmake pkgconf patch \
   libdrm wayland wayland-protocols libxkbcommon libinput seatd \
   libunwind pixman cairo libjpeg-turbo libwebp libpng mesa pango \
-  lcms2 mtdev libva colord pipewire freerdp neatvnc libxml2 glib2 \
+  lcms2 mtdev libva colord pipewire freerdp neatvnc aml libxml2 glib2 \
   hwdata libdisplay-info libliftoff xorg-xwayland libxcb \
   xcb-util-renderutil xcb-util-wm librsvg libsfdo
 
@@ -68,11 +68,48 @@ build_meson() {
 }
 
 clone_or_checkout https://github.com/cktan/tomlc99.git tomlc99
-if [[ -f tomlc99/libtoml.pc.sample ]]; then
-  cp -f tomlc99/libtoml.pc.sample tomlc99/libtoml.pc
-fi
 build_make tomlc99
+
+# tomlc99's upstream pkg-config sample/install behavior is not consistent
+# across revisions/distros. drm-lease-manager asks Meson for dependency('libtoml'),
+# so install a deterministic metadata file after the library itself is present.
+install -d /usr/local/lib/pkgconfig
+cat >/usr/local/lib/pkgconfig/libtoml.pc <<'EOF'
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libtoml
+Description: TOML C99 library
+Version: 1.0
+Libs: -L${libdir} -ltoml
+Cflags: -I${includedir}
+EOF
+
+# The Makefile installs libtoml.so.1.0 but may omit the unversioned linker name.
+# Keep the static archive fallback, and provide the conventional shared-library
+# linker symlink when the versioned object exists.
+if [[ -f /usr/local/lib/libtoml.so.1.0 && ! -e /usr/local/lib/libtoml.so ]]; then
+  ln -s libtoml.so.1.0 /usr/local/lib/libtoml.so
+fi
 ldconfig
+
+if ! pkg-config --exists libtoml; then
+  echo "Falha: pkg-config não consegue localizar libtoml." >&2
+  echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >&2
+  echo "Conteúdo de /usr/local/lib/pkgconfig/libtoml.pc:" >&2
+  cat /usr/local/lib/pkgconfig/libtoml.pc >&2 || true
+  exit 6
+fi
+if ! printf '#include <toml.h>\nint main(void){return 0;}\n' \
+  | cc -x c - -o /tmp/msa-libtoml-check $(pkg-config --cflags --libs libtoml); then
+  echo "Falha: libtoml foi encontrada pelo pkg-config, mas não pode ser vinculada." >&2
+  exit 7
+fi
+rm -f /tmp/msa-libtoml-check
+
+echo "libtoml detectada: $(pkg-config --modversion libtoml)"
 
 clone_or_checkout \
   https://gerrit.automotivelinux.org/gerrit/src/drm-lease-manager \
