@@ -70,10 +70,21 @@ build_meson() {
 clone_or_checkout https://github.com/cktan/tomlc99.git tomlc99
 build_make tomlc99
 
+# Older versions of this installer could accidentally create
+# /usr/local/lib/pkgconfig as a regular file (the old Makefile was given that
+# path as an install destination before the directory existed). Recover that
+# state automatically instead of failing with "Arquivo existe".
+if [[ -e /usr/local/lib/pkgconfig && ! -d /usr/local/lib/pkgconfig ]]; then
+  legacy_pkgconfig_backup="/usr/local/lib/pkgconfig.msa-legacy-$(date +%Y%m%d%H%M%S)"
+  echo "Corrigindo instalação legada: /usr/local/lib/pkgconfig era um arquivo."
+  mv /usr/local/lib/pkgconfig "$legacy_pkgconfig_backup"
+  echo "Backup salvo em: $legacy_pkgconfig_backup"
+fi
+install -d /usr/local/lib/pkgconfig
+
 # tomlc99's upstream pkg-config sample/install behavior is not consistent
 # across revisions/distros. drm-lease-manager asks Meson for dependency('libtoml'),
 # so install a deterministic metadata file after the library itself is present.
-install -d /usr/local/lib/pkgconfig
 cat >/usr/local/lib/pkgconfig/libtoml.pc <<'EOF'
 prefix=/usr/local
 exec_prefix=${prefix}
@@ -88,8 +99,6 @@ Cflags: -I${includedir}
 EOF
 
 # The Makefile installs libtoml.so.1.0 but may omit the unversioned linker name.
-# Keep the static archive fallback, and provide the conventional shared-library
-# linker symlink when the versioned object exists.
 if [[ -f /usr/local/lib/libtoml.so.1.0 && ! -e /usr/local/lib/libtoml.so ]]; then
   ln -s libtoml.so.1.0 /usr/local/lib/libtoml.so
 fi
