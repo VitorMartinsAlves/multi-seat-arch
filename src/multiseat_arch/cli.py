@@ -87,15 +87,31 @@ def _apply_sync_transaction(config) -> None:
                     f"Falha ao aplicar periféricos: {original}. Não havia configuração "
                     "anterior para rollback. Use 'multi-seat-arch restore' se necessário."
                 ) from original
-            cfg.save(previous)
+
+            save_error: Exception | None = None
+            route_error: Exception | None = None
+            try:
+                cfg.save(previous)
+            except Exception as exc:
+                save_error = exc
+
             try:
                 ensure_multiseat_running(previous)
                 sync_devices_now(previous)
-            except Exception as rollback_error:
+            except Exception as exc:
+                route_error = exc
+
+            if save_error is not None or route_error is not None:
+                details: list[str] = []
+                if save_error is not None:
+                    details.append(f"persistência: {save_error}")
+                if route_error is not None:
+                    details.append(f"roteamento: {route_error}")
                 raise RuntimeError(
-                    f"Falha ao aplicar periféricos: {original}. O rollback também falhou: "
-                    f"{rollback_error}. Use 'multi-seat-arch restore'."
+                    f"Falha ao aplicar periféricos: {original}. O rollback também falhou "
+                    f"({'; '.join(details)}). Use 'multi-seat-arch restore'."
                 ) from original
+
             raise RuntimeError(
                 f"Falha ao aplicar periféricos: {original}. A configuração e as rotas "
                 "anteriores foram restauradas."
