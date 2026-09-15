@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import select
 import threading
+import time
 from collections.abc import Iterable
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -14,12 +15,34 @@ except ImportError:  # pragma: no cover - installer provides python-evdev
     EvdevInputDevice = None  # type: ignore[assignment]
 
 
+class _ActivityRateLimiter:
+    """Bound UI notifications so high-rate mice cannot flood Qt's event queue."""
+
+    def __init__(self, interval: float = 0.12) -> None:
+        self.interval = interval
+        self._last: dict[str, float] = {}
+
+    def allow(self, key: str, now: float) -> bool:
+        previous = self._last.get(key)
+        if previous is not None and now - previous < self.interval:
+            return False
+        self._last[key] = now
+        return True
+
+    def reset(self) -> None:
+        self._last.clear()
+
+
 class InputActivityMonitor(QObject):
     """Watch evdev activity for UI identification without EVIOCGRAB.
 
     Each event node is opened read-only. Linux evdev maintains an independent
     queue per open file descriptor, so observing activity here does not steal
     events from the compositor or applications.
+
+    Raw mouse motion can arrive at hundreds or thousands of batches per second.
+    Emitting one Qt signal for every batch can starve the GUI thread, so activity
+    notifications are deliberately rate-limited per input function.
     """
 
     activity = pyqtSignal(str)
@@ -72,11 +95,13 @@ class InputActivityMonitor(QObject):
     def _worker(self) -> None:
         opened: dict[int, tuple[str, object]] = {}
         active_generation = -1
+        limiter = _ActivityRateLimiter()
         try:
             while not self._stop.is_set():
                 generation, wanted = self._snapshot()
                 if generation != active_generation:
                     self._close_all(opened)
+                    limiter.reset()
                     active_generation = generation
                     if EvdevInputDevice is not None:
                         for event_path, key in wanted.items():
@@ -115,9 +140,7 @@ class InputActivityMonitor(QObject):
                             pass
                         opened.pop(fd, None)
                         continue
-                    if events:
-                        # One pulse per read batch is enough; mouse motion can emit
-                        # hundreds of events per second.
+                    if events and limiter.allow(key, time.monotonic()):
                         self.activity.emit(key)
         finally:
             self._close_all(opened)
