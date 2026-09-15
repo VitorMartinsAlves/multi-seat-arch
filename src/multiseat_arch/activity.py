@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover - installer provides python-evdev
 class _ActivityRateLimiter:
     """Bound UI notifications so high-rate mice cannot flood Qt's event queue."""
 
-    def __init__(self, interval: float = 0.12) -> None:
+    def __init__(self, interval: float = 0.65) -> None:
         self.interval = interval
         self._last: dict[str, float] = {}
 
