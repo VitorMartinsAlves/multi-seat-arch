@@ -1,0 +1,6 @@
+# Multi Seat Arch — ASTER-like "Identificar por uso"
+#
+# systemd-logind applies TAG+="uaccess" as an ACL for the currently active local
+# session. This lets the GUI observe /dev/input/event* without running as root.
+# The activity monitor opens devices read-only and never EVIOCGRABs them.
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT}=="1", TAG+="uaccess"
