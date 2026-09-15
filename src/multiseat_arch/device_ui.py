@@ -16,6 +16,11 @@ _SYSTEM_NAMES = (
     "lid switch",
     "video bus",
     "pc speaker",
+    "wireless radio control",
+    "wmi hotkeys",
+    "headphone",
+    "hdmi/dp",
+    "jack",
 )
 
 
@@ -59,12 +64,44 @@ def icon_names(kind: str, bus: str = "") -> tuple[str, ...]:
 def is_system_device(device: InputDevice) -> bool:
     """Classify low-level controls that should normally remain on seat0."""
     low = device.name.lower()
-    return any(token in low for token in _SYSTEM_NAMES)
+    if any(token in low for token in _SYSTEM_NAMES):
+        return True
+    # Unknown platform/PCI/internal event nodes are normally ACPI, jack-detect or
+    # vendor hotkey controls rather than a peripheral the user wants to route.
+    return device.kind == "other" and device.bus.lower() in {
+        "platform",
+        "pci",
+        "acpi",
+        "interno",
+        "",
+    }
 
 
 def is_useful_input(device: InputDevice) -> bool:
     """Return whether automatic assignment should move this input to a user seat."""
     return not is_system_device(device) and device.kind in _USEFUL_KINDS
+
+
+def _group_kind(name: str, members: list[InputDevice]) -> str:
+    """Pick the physical device type instead of an arbitrary composite interface."""
+    low = name.lower()
+    if "touchpad" in low:
+        return "touchpad"
+    if "keyboard" in low or "keypad" in low:
+        return "keyboard"
+    if "mouse" in low:
+        return "mouse"
+    if any(token in low for token in ("gamepad", "joystick", "controller")):
+        return "gamepad"
+
+    kinds = {item.kind for item in members}
+    if len(kinds) == 1:
+        return members[0].kind
+    # Prefer keyboard over mouse for mixed HID groups unless the product name
+    # clearly identifies a mouse. Gaming keyboards often expose relative axes or
+    # media-control interfaces which udev can classify as mouse-like.
+    priority = ("touchpad", "keyboard", "mouse", "gamepad", "other")
+    return next(value for value in priority if value in kinds)
 
 
 def group_devices(
@@ -89,17 +126,8 @@ def group_devices(
     for group_id in order:
         members = buckets[group_id]
         names = [clean_device_name(item.name) for item in members]
-        # Prefer the shortest normalized name: composite interfaces usually append
-        # "Consumer Control" / "System Control" to the product name.
         name = min(names, key=lambda value: (len(value), value.lower()))
-        kinds = {item.kind for item in members}
-        if len(kinds) == 1:
-            kind = members[0].kind
-        else:
-            # Composite gaming devices may expose media keys as a second kind.
-            # Prefer a user-facing physical-device icon over the generic fallback.
-            priority = ("touchpad", "mouse", "keyboard", "gamepad", "other")
-            kind = next(value for value in priority if value in kinds)
+        kind = _group_kind(name, members)
         buses = {item.bus for item in members if item.bus}
         bus = members[0].bus if len(buses) <= 1 else "misto"
         seats = {item.seat for item in members}
