@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QBrush, QColor, QCloseEvent, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -20,10 +20,12 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -31,7 +33,9 @@ from PyQt6.QtWidgets import (
 )
 
 from . import config as cfg
+from .activity import InputActivityMonitor
 from .backend import doctor, validate as validate_backend
+from .device_ui import group_devices, icon_names, is_system_device, is_useful_input
 from .discovery import (
     discover_bluetooth_controllers,
     discover_displays,
@@ -43,18 +47,27 @@ from .status import runtime_status
 MODE_UNMANAGED = "unmanaged"
 MODE_SHARED = "shared"
 MODE_DISABLED = "disabled"
+MODE_MIXED = "__mixed__"
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Multi Seat Arch")
-        self.resize(1220, 780)
+        self.resize(1280, 820)
         self.displays = []
         self.inputs: list[InputDevice] = []
         self.rules: dict[str, DeviceRule] = {}
         self.loading = False
+        self.row_for_key: dict[str, int] = {}
+        self._pulse_generation: dict[str, int] = {}
+        self._activity_opened = 0
+        self._activity_total = 0
+
         self._build()
+        self.activity_monitor = InputActivityMonitor(self)
+        self.activity_monitor.activity.connect(self._on_device_activity)
+        self.activity_monitor.availability.connect(self._activity_availability)
         self._load_saved_config()
         self.refresh_all(silent=True)
 
@@ -84,8 +97,8 @@ class MainWindow(QMainWindow):
         title_row.addWidget(self.runtime_badge)
 
         subtitle = QLabel(
-            "Gerencie monitores e periféricos em tempo real: mover, compartilhar, "
-            "desativar ou devolver ao sistema sem editar arquivos."
+            "Gerencie monitores e periféricos em tempo real. Os ícones mostram o "
+            "tipo do dispositivo e a linha pulsa quando aquele input é utilizado."
         )
         subtitle.setWordWrap(True)
         outer.addWidget(subtitle)
@@ -100,24 +113,50 @@ class MainWindow(QMainWindow):
         device_box = QFrame()
         device_box.setFrameShape(QFrame.Shape.StyledPanel)
         device_layout = QVBoxLayout(device_box)
+
         header = QHBoxLayout()
         device_layout.addLayout(header)
         heading = QLabel("Periféricos")
         heading.setStyleSheet("font-size: 20px; font-weight: 650")
         header.addWidget(heading)
         header.addStretch(1)
+        self.activity_label = QLabel("")
+        self.activity_label.setStyleSheet("color: palette(mid)")
+        header.addWidget(self.activity_label)
         self.hardware_label = QLabel("")
         header.addWidget(self.hardware_label)
+
+        filters = QHBoxLayout()
+        device_layout.addLayout(filters)
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("Buscar periférico…")
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.textChanged.connect(self._render_device_table)
+        filters.addWidget(self.search_box, 1)
+
+        self.group_interfaces = QCheckBox("Agrupar interfaces do mesmo dispositivo")
+        self.group_interfaces.setChecked(True)
+        self.group_interfaces.toggled.connect(self._render_device_table)
+        filters.addWidget(self.group_interfaces)
+
+        self.show_system = QCheckBox("Mostrar dispositivos de sistema")
+        self.show_system.setChecked(False)
+        self.show_system.toggled.connect(self._render_device_table)
+        filters.addWidget(self.show_system)
+
+        self.identify_activity = QCheckBox("Identificar por uso")
+        self.identify_activity.setChecked(True)
+        self.identify_activity.toggled.connect(self._toggle_activity_monitor)
+        filters.addWidget(self.identify_activity)
 
         self.device_table = QTableWidget(0, 5)
         self.device_table.setHorizontalHeaderLabels(
             ["Dispositivo", "Tipo", "Conexão", "Estado", "Destino"]
         )
         self.device_table.verticalHeader().setVisible(False)
-        self.device_table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
+        self.device_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.device_table.setAlternatingRowColors(True)
+        self.device_table.setIconSize(self.device_table.iconSize().expandedTo(self.device_table.iconSize()))
         self.device_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch
         )
@@ -193,7 +232,9 @@ class MainWindow(QMainWindow):
         user_row = QHBoxLayout()
         user_row.addWidget(user, 1)
         create_user = QPushButton("Criar usuário")
-        create_user.clicked.connect(lambda _checked=False, combo=user: self.create_user(combo))
+        create_user.clicked.connect(
+            lambda _checked=False, combo=user: self.create_user(combo)
+        )
         user_row.addWidget(create_user)
         layout.addLayout(user_row)
 
@@ -309,8 +350,16 @@ class MainWindow(QMainWindow):
             return MODE_UNMANAGED
         return rule.seat if rule.mode == "seat" else rule.mode
 
-    def _make_destination_combo(self, key: str, current: str) -> QComboBox:
+    def _choice_for_keys(self, keys: list[str]) -> str:
+        choices = {self._device_choice(self.rules.get(key)) for key in keys}
+        if len(choices) == 1:
+            return next(iter(choices))
+        return MODE_MIXED
+
+    def _make_destination_combo(self, keys: list[str], current: str) -> QComboBox:
         combo = QComboBox()
+        if current == MODE_MIXED:
+            combo.addItem("Misto (várias regras)", MODE_MIXED)
         for label, value in (
             ("Seat A", "seat-a"),
             ("Seat B", "seat-b"),
@@ -320,82 +369,205 @@ class MainWindow(QMainWindow):
         ):
             combo.addItem(label, value)
         index = combo.findData(current)
-        combo.setCurrentIndex(
-            index if index >= 0 else combo.findData(MODE_UNMANAGED)
-        )
+        combo.setCurrentIndex(index if index >= 0 else combo.findData(MODE_UNMANAGED))
         combo.currentIndexChanged.connect(
-            lambda _i, k=key, c=combo: self._rule_changed(k, c)
+            lambda _i, ks=tuple(keys), c=combo: self._rules_changed(list(ks), c)
         )
         return combo
 
-    def _rule_changed(self, key: str, combo: QComboBox) -> None:
+    def _rules_changed(self, keys: list[str], combo: QComboBox) -> None:
         if self.loading:
             return
         choice = combo.currentData()
-        current = self.rules.get(key)
-        name = current.name if current else ""
-        if choice in {"seat-a", "seat-b"}:
-            self.rules[key] = DeviceRule(
-                key=key, mode="seat", seat=choice, name=name
+        if choice == MODE_MIXED:
+            return
+        present = {device.key: device for device in self.inputs}
+        for key in keys:
+            current = self.rules.get(key)
+            name = (
+                present[key].name
+                if key in present
+                else current.name
+                if current
+                else ""
             )
-        else:
-            self.rules[key] = DeviceRule(
-                key=key, mode=choice, seat="", name=name  # type: ignore[arg-type]
-            )
+            if choice in {"seat-a", "seat-b"}:
+                self.rules[key] = DeviceRule(key=key, mode="seat", seat=choice, name=name)
+            else:
+                self.rules[key] = DeviceRule(
+                    key=key, mode=choice, seat="", name=name  # type: ignore[arg-type]
+                )
         self.status.setText(
             "Alteração pendente. Salve ou aplique os periféricos para efetivar."
         )
 
-    def _render_device_table(self) -> None:
+    @staticmethod
+    def _theme_icon(kind: str, bus: str) -> QIcon:
+        for name in icon_names(kind, bus):
+            icon = QIcon.fromTheme(name)
+            if not icon.isNull():
+                return icon
+        return QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+
+    def _render_device_table(self, _value=None) -> None:
         self.loading = True
         try:
-            present = {device.key: device for device in self.inputs}
-            keys = list(present)
-            keys.extend(key for key in self.rules if key not in present)
-            self.device_table.setRowCount(len(keys))
+            self.row_for_key.clear()
+            search = self.search_box.text().strip().lower()
+            show_system = self.show_system.isChecked()
+            groups = group_devices(
+                self.inputs, group_interfaces=self.group_interfaces.isChecked()
+            )
+            visible_groups = []
+            present_keys: set[str] = set()
+            for group in groups:
+                present_keys.update(group.keys)
+                if not show_system and all(is_system_device(item) for item in group.devices):
+                    continue
+                if search and search not in (
+                    f"{group.name} {group.kind} {group.bus} "
+                    + " ".join(item.name for item in group.devices)
+                ).lower():
+                    continue
+                visible_groups.append(group)
 
-            for row, key in enumerate(keys):
-                device = present.get(key)
-                rule = self.rules.get(key)
-                if device and not rule:
-                    rule = DeviceRule(
-                        key=key, mode=MODE_UNMANAGED, name=device.name
-                    )
-                    self.rules[key] = rule
-                elif device and rule and not rule.name:
-                    rule.name = device.name
+            disconnected = [
+                rule
+                for key, rule in self.rules.items()
+                if key not in present_keys
+                and (not search or search in (rule.name or key).lower())
+            ]
+            self.device_table.setRowCount(len(visible_groups) + len(disconnected))
 
-                name = (
-                    device.name
-                    if device
-                    else rule.name
-                    if rule and rule.name
-                    else key
+            row = 0
+            for group in visible_groups:
+                for device in group.devices:
+                    rule = self.rules.get(device.key)
+                    if rule is None:
+                        self.rules[device.key] = DeviceRule(
+                            key=device.key, mode=MODE_UNMANAGED, name=device.name
+                        )
+                    elif not rule.name:
+                        rule.name = device.name
+                    self.row_for_key[device.key] = row
+
+                suffix = (
+                    f"  ·  {len(group.devices)} interfaces"
+                    if len(group.devices) > 1
+                    else ""
+                )
+                name_item = QTableWidgetItem(f"{group.name}{suffix}")
+                name_item.setIcon(self._theme_icon(group.kind, group.bus))
+                members = "\n".join(
+                    f"• {item.name} — {item.event}" for item in group.devices
+                )
+                name_item.setToolTip(
+                    "Use este periférico para fazê-lo piscar na lista.\n\n" + members
                 )
                 values = [
-                    name,
-                    device.kind if device else "—",
-                    (device.bus or "interno") if device else "—",
-                    device.seat if device else "desconectado",
+                    name_item,
+                    QTableWidgetItem(group.kind),
+                    QTableWidgetItem(group.bus or "interno"),
+                    QTableWidgetItem(group.seat),
                 ]
-                for col, value in enumerate(values):
-                    item = QTableWidgetItem(str(value))
+                for col, item in enumerate(values):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    if not device:
-                        item.setForeground(QColor("gray"))
                     self.device_table.setItem(row, col, item)
 
                 combo = self._make_destination_combo(
-                    key, self._device_choice(rule)
+                    group.keys, self._choice_for_keys(group.keys)
                 )
-                if not device:
+                if len(group.devices) > 1:
                     combo.setToolTip(
-                        "Regra mantida: será reaplicada quando o periférico voltar."
+                        "A alteração é aplicada a todas as interfaces deste periférico."
                     )
                 self.device_table.setCellWidget(row, 4, combo)
-                self.device_table.setRowHeight(row, 34)
+                self.device_table.setRowHeight(row, 38)
+                row += 1
+
+            for rule in disconnected:
+                name = rule.name or rule.key
+                item = QTableWidgetItem(name)
+                item.setIcon(self._theme_icon("other", ""))
+                item.setForeground(QColor("gray"))
+                item.setToolTip(
+                    "Periférico desconectado. A regra será mantida e reaplicada quando ele voltar."
+                )
+                values = [
+                    item,
+                    QTableWidgetItem("—"),
+                    QTableWidgetItem("—"),
+                    QTableWidgetItem("desconectado"),
+                ]
+                for col, cell in enumerate(values):
+                    cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    cell.setForeground(QColor("gray"))
+                    self.device_table.setItem(row, col, cell)
+                combo = self._make_destination_combo(
+                    [rule.key], self._device_choice(rule)
+                )
+                combo.setToolTip(
+                    "Regra mantida: será reaplicada quando o periférico voltar."
+                )
+                self.device_table.setCellWidget(row, 4, combo)
+                self.device_table.setRowHeight(row, 36)
+                row += 1
+
+            self.hardware_label.setText(
+                f"{len(self.displays)} monitor(es) • {len(self.inputs)} input(s) • "
+                f"{len(visible_groups)} periférico(s)"
+            )
         finally:
             self.loading = False
+
+    def _toggle_activity_monitor(self, enabled: bool) -> None:
+        self.activity_monitor.set_devices(self.inputs if enabled else [])
+        if not enabled:
+            self.activity_label.setText("atividade desligada")
+
+    def _activity_availability(self, opened: int, total: int) -> None:
+        self._activity_opened = opened
+        self._activity_total = total
+        if not self.identify_activity.isChecked():
+            self.activity_label.setText("atividade desligada")
+        elif total == 0:
+            self.activity_label.setText("sem inputs identificáveis")
+        elif opened == total:
+            self.activity_label.setText("● identificação por uso pronta")
+            self.activity_label.setStyleSheet("color:#43a047")
+        elif opened:
+            self.activity_label.setText(f"● atividade {opened}/{total}")
+            self.activity_label.setStyleSheet("color:#f9a825")
+        else:
+            self.activity_label.setText("atividade sem acesso aos /dev/input")
+            self.activity_label.setStyleSheet("color:#e53935")
+
+    def _on_device_activity(self, key: str) -> None:
+        if not self.identify_activity.isChecked():
+            return
+        row = self.row_for_key.get(key)
+        if row is None:
+            return
+        generation = self._pulse_generation.get(key, 0) + 1
+        self._pulse_generation[key] = generation
+        pulse = QBrush(QColor(46, 125, 50, 110))
+        for col in range(4):
+            item = self.device_table.item(row, col)
+            if item is not None:
+                item.setBackground(pulse)
+
+        def clear() -> None:
+            if self._pulse_generation.get(key) != generation:
+                return
+            current_row = self.row_for_key.get(key)
+            if current_row is None:
+                return
+            for col in range(4):
+                item = self.device_table.item(current_row, col)
+                if item is not None:
+                    item.setBackground(QBrush())
+
+        QTimer.singleShot(480, clear)
 
     def refresh_all(self, _checked=False, *, silent: bool = False) -> None:
         try:
@@ -411,15 +583,15 @@ class MainWindow(QMainWindow):
 
         self._populate_seat_selectors()
         self._render_device_table()
-        self.hardware_label.setText(
-            f"{len(self.displays)} monitor(es) • {len(self.inputs)} input(s)"
+        self.activity_monitor.set_devices(
+            self.inputs if self.identify_activity.isChecked() else []
         )
         if bluetooth:
             self.bluetooth_note.setText(
                 "Bluetooth: "
                 + ", ".join(bluetooth)
-                + ". O controlador fica global; HID Bluetooth (teclado, mouse, "
-                "controle) pode ser movido, compartilhado ou desativado na tabela."
+                + ". O controlador fica global; HID Bluetooth pode ser movido, "
+                "compartilhado, identificado por atividade ou desativado."
             )
         else:
             self.bluetooth_note.setText("Nenhum controlador Bluetooth detectado.")
@@ -429,13 +601,13 @@ class MainWindow(QMainWindow):
             new_inputs = discover_inputs()
         except Exception:
             return
-        old = {(item.key, item.event) for item in self.inputs}
-        new = {(item.key, item.event) for item in new_inputs}
+        old = {(item.key, item.event, item.seat) for item in self.inputs}
+        new = {(item.key, item.event, item.seat) for item in new_inputs}
         if old != new:
             self.inputs = new_inputs
             self._render_device_table()
-            self.hardware_label.setText(
-                f"{len(self.displays)} monitor(es) • {len(self.inputs)} input(s) • hotplug"
+            self.activity_monitor.set_devices(
+                self.inputs if self.identify_activity.isChecked() else []
             )
 
     def refresh_runtime_status(self) -> None:
@@ -491,6 +663,13 @@ class MainWindow(QMainWindow):
             self._set_combo_data(self.b["monitor"], internal.connector)
 
         for device in self.inputs:
+            if not is_useful_input(device):
+                self.rules[device.key] = DeviceRule(
+                    key=device.key,
+                    mode=MODE_UNMANAGED,
+                    name=device.name,
+                )
+                continue
             target = (
                 "seat-a"
                 if device.bus.lower() in {"usb", "bluetooth"}
@@ -506,8 +685,9 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Distribuição automática",
-            "USB/Bluetooth foi direcionado ao Seat A e dispositivos internos "
-            "ao Seat B. Revise a tabela antes de iniciar.",
+            "USB/Bluetooth de usuário foi direcionado ao Seat A e teclado/touchpad "
+            "internos ao Seat B. Botões de energia, tampa e Video Bus ficaram no "
+            "sistema por segurança. Revise antes de iniciar.",
         )
 
     def build_config(self) -> Config:
@@ -638,6 +818,10 @@ class MainWindow(QMainWindow):
         )
         if answer == QMessageBox.StandardButton.Yes and self._pkexec("restore"):
             self.status.setText("Restauração agendada.")
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        self.activity_monitor.stop()
+        super().closeEvent(event)
 
 
 def main() -> None:
