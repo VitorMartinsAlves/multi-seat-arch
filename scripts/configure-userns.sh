@@ -64,12 +64,13 @@ if ! runuser -u "$TARGET_USER" -- unshare --user --map-root-user /usr/bin/true; 
   exit 3
 fi
 
-# Steam pressure-vessel uses bubblewrap. This catches LSM/mount restrictions that
-# a bare unshare test does not catch and is also representative of Chromium sandboxes.
+# Steam pressure-vessel uses bubblewrap. Bind the host root read-only so this
+# checks namespace/LSM permissions without failing merely because loader paths
+# such as /lib64 were omitted from a synthetic root.
 if command -v bwrap >/dev/null 2>&1; then
   if ! runuser -u "$TARGET_USER" -- bwrap \
       --unshare-user --unshare-pid --unshare-ipc --unshare-uts \
-      --ro-bind /usr /usr --proc /proc --dev /dev \
+      --ro-bind / / \
       /usr/bin/true; then
     echo "Falha: bubblewrap ainda não consegue criar o sandbox para $TARGET_USER." >&2
     print_diag
