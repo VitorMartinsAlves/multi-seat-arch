@@ -6,15 +6,18 @@ set -euo pipefail
   exit 1
 }
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 WORK=${WORK:-/var/lib/multi-seat-arch/build}
 JOBS=${JOBS:-$(nproc)}
 WLROOTS_REF=${WLROOTS_REF:-0.20.2}
 LABWC_REF=${LABWC_REF:-0.20.2}
+ENGINE_REV=direct-input-v1
 
 export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
 
 pacman -S --needed --noconfirm \
-  git make meson ninja wget gcc cmake pkgconf patch \
+  git make meson ninja wget gcc cmake pkgconf patch acl \
   libdrm wayland wayland-protocols libxkbcommon libinput seatd \
   libunwind pixman cairo libjpeg-turbo libwebp libpng mesa pango \
   lcms2 mtdev libva colord pipewire freerdp neatvnc aml libxml2 glib2 \
@@ -70,10 +73,6 @@ build_meson() {
 clone_or_checkout https://github.com/cktan/tomlc99.git tomlc99
 build_make tomlc99
 
-# Older versions of this installer could accidentally create
-# /usr/local/lib/pkgconfig as a regular file (the old Makefile was given that
-# path as an install destination before the directory existed). Recover that
-# state automatically instead of failing with "Arquivo existe".
 if [[ -e /usr/local/lib/pkgconfig && ! -d /usr/local/lib/pkgconfig ]]; then
   legacy_pkgconfig_backup="/usr/local/lib/pkgconfig.msa-legacy-$(date +%Y%m%d%H%M%S)"
   echo "Corrigindo instalação legada: /usr/local/lib/pkgconfig era um arquivo."
@@ -82,9 +81,6 @@ if [[ -e /usr/local/lib/pkgconfig && ! -d /usr/local/lib/pkgconfig ]]; then
 fi
 install -d /usr/local/lib/pkgconfig
 
-# tomlc99's upstream pkg-config sample/install behavior is not consistent
-# across revisions/distros. drm-lease-manager asks Meson for dependency('libtoml'),
-# so install a deterministic metadata file after the library itself is present.
 cat >/usr/local/lib/pkgconfig/libtoml.pc <<'EOF'
 prefix=/usr/local
 exec_prefix=${prefix}
@@ -98,7 +94,6 @@ Libs: -L${libdir} -ltoml
 Cflags: -I${includedir}
 EOF
 
-# The Makefile installs libtoml.so.1.0 but may omit the unversioned linker name.
 if [[ -f /usr/local/lib/libtoml.so.1.0 && ! -e /usr/local/lib/libtoml.so ]]; then
   ln -s libtoml.so.1.0 /usr/local/lib/libtoml.so
 fi
@@ -107,7 +102,6 @@ ldconfig
 if ! pkg-config --exists libtoml; then
   echo "Falha: pkg-config não consegue localizar libtoml." >&2
   echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >&2
-  echo "Conteúdo de /usr/local/lib/pkgconfig/libtoml.pc:" >&2
   cat /usr/local/lib/pkgconfig/libtoml.pc >&2 || true
   exit 6
 fi
@@ -143,13 +137,28 @@ if git -C wlroots apply --check "$PATCH"; then
   git -C wlroots apply "$PATCH"
 else
   echo "O patch DRM lease não é compatível com wlroots $WLROOTS_REF." >&2
-  echo "Abortando para não instalar um wlroots sem suporte multiseat." >&2
   exit 2
+fi
+
+DIRECT_INPUT_PATCH="$REPO_DIR/patches/wlroots-direct-input.patch"
+if [[ ! -f "$DIRECT_INPUT_PATCH" ]]; then
+  echo "Falha: patch local de input não encontrado: $DIRECT_INPUT_PATCH" >&2
+  exit 8
+fi
+if git -C wlroots apply --check "$DIRECT_INPUT_PATCH"; then
+  git -C wlroots apply "$DIRECT_INPUT_PATCH"
+else
+  echo "O patch de input direto não é compatível com wlroots $WLROOTS_REF após o patch DRM lease." >&2
+  exit 9
 fi
 
 grep -q 'getenv("DRM_LEASE")' wlroots/backend/session/session.c || {
   echo "Falha: patch DRM_LEASE não foi aplicado." >&2
   exit 3
+}
+grep -q 'Failed to directly open multiseat input' wlroots/backend/session/session.c || {
+  echo "Falha: patch de input direto não foi aplicado." >&2
+  exit 10
 }
 grep -q "dependency('libdlmclient')" wlroots/meson.build || {
   echo "Falha: wlroots não foi ligado ao libdlmclient." >&2
@@ -178,6 +187,8 @@ for bin in /usr/local/bin/drm-lease-manager /usr/local/bin/labwc; do
 done
 
 /usr/local/bin/labwc --version >/dev/null
+install -d /usr/local/share/multi-seat-arch
+printf '%s\n' "$ENGINE_REV" >/usr/local/share/multi-seat-arch/engine-version
 
 echo "Engine DRM lease instalada e validada."
-echo "wlroots: $WLROOTS_REF / labwc: $LABWC_REF"
+echo "wlroots: $WLROOTS_REF / labwc: $LABWC_REF / engine: $ENGINE_REV"
