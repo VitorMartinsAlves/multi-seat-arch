@@ -16,14 +16,20 @@ class SessionShellTests(unittest.TestCase):
             ["/usr/local/bin/labwc", "--debug", "-s", "/usr/bin/multi-seat-arch-session"],
         )
 
+    def test_labwc_command_fails_if_session_helper_is_missing(self):
+        with patch("multiseat_arch.runtime_patch.shutil.which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "multi-seat-arch-session"):
+                runtime_patch._labwc_command("/usr/local/bin/labwc")
+
     def test_plasma_wallpaper_is_reused_for_pcmanfm(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            wallpaper = home / "wall.jpg"
+            wallpaper = home / "wall paper.jpg"
             wallpaper.write_bytes(b"fake")
             plasma = home / ".config/plasma-org.kde.plasma.desktop-appletsrc"
             plasma.parent.mkdir(parents=True)
-            plasma.write_text(f"[Wallpaper]\nImage=file://{wallpaper}\n", encoding="utf-8")
+            encoded = str(wallpaper).replace(" ", "%20")
+            plasma.write_text(f"[Wallpaper]\nImage=file://{encoded}\n", encoding="utf-8")
 
             with patch("multiseat_arch.session_shell.Path.home", return_value=home):
                 session_shell._prepare_pcmanfm_profile()
