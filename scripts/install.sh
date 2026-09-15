@@ -8,28 +8,23 @@ fi
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+ENGINE_REV=direct-input-v1
+ENGINE_STAMP=/usr/local/share/multi-seat-arch/engine-version
+
 sudo pacman -S --needed --noconfirm \
   python python-pyqt6 python-pip python-evdev qt6-wayland \
-  libinput systemd pciutils polkit pcmanfm-qt xfce4-terminal
+  libinput systemd pciutils polkit pcmanfm-qt xfce4-terminal acl
 
 # Shared/disabled inputs are implemented with EVIOCGRAB + uinput clones.
-# Load it now and on future boots. This is reversible and does not change the
-# default systemd target.
 echo uinput | sudo tee /etc/modules-load.d/multi-seat-arch.conf >/dev/null
 sudo modprobe uinput
 
-# ASTER-like activity identification needs read access to evdev nodes from the
-# active local desktop session. TAG+=uaccess delegates that ACL through logind;
-# it does not make /dev/input world-readable and inactive/remote users do not
-# receive the access grant.
+# Activity identification only needs local-session read ACLs.
 sudo install -Dm644 \
   udev/70-multi-seat-arch-input-monitor.rules \
   /etc/udev/rules.d/70-multi-seat-arch-input-monitor.rules
 
-# systemd-logind only treats inputN devices as seat masters when they carry the
-# master-of-seat tag. The upstream single-GPU multiseat implementation patches
-# systemd's vendor 71-seat.rules in place; do the same semantically through a
-# local rule instead, so package upgrades and recovery stay safe.
+# Keep inputN parents visible as seat masters without editing systemd-owned files.
 sudo install -Dm644 \
   udev/72-multi-seat-arch-seat-master.rules \
   /etc/udev/rules.d/72-multi-seat-arch-seat-master.rules
@@ -40,9 +35,6 @@ if systemctl list-unit-files multiseat.service --no-legend 2>/dev/null \
   sudo systemctl disable --now multiseat.service || true
 fi
 
-# garlett/multiseat used to edit systemd's vendor 71-seat.rules in place.
-# Undo only that exact mutation if it is present; our local rule above supplies
-# master-of-seat without touching files owned by systemd.
 LEGACY_RULE=/usr/lib/udev/rules.d/71-seat.rules
 if [[ -f "$LEGACY_RULE" ]] \
   && grep -Fq 'SUBSYSTEM=="input", KERNEL=="input*", TAG+="seat", TAG+="master-of-seat"' "$LEGACY_RULE"; then
@@ -64,10 +56,13 @@ elif ldd "$dlm_bin" 2>/dev/null | grep -q 'not found'; then
   engine_needs_build=1
 elif ldd /usr/local/bin/labwc 2>/dev/null | grep -q 'not found'; then
   engine_needs_build=1
+elif [[ ! -f "$ENGINE_STAMP" ]] || [[ "$(cat "$ENGINE_STAMP" 2>/dev/null || true)" != "$ENGINE_REV" ]]; then
+  echo "Engine multiseat antiga detectada; recompilando suporte de input direto..."
+  engine_needs_build=1
 fi
 
 if (( engine_needs_build )); then
-  echo "Engine DRM lease ausente/incompleta. Compilando componentes..."
+  echo "Compilando engine DRM lease + input multiseat..."
   sudo bash scripts/build-engine.sh
 fi
 
