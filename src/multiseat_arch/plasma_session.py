@@ -21,21 +21,37 @@ def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(command, 127, "")
 
 
-def _import_user_manager_environment(timeout: float = 10.0) -> None:
+def _import_matching_xwayland_environment(timeout: float = 5.0) -> None:
+    """Import DISPLAY/XAUTHORITY only from this seat's KWin environment.
+
+    Never import WAYLAND_DISPLAY from the user manager: it may be stale from a
+    previous Labwc/Plasma session and was the reason one seat repeatedly tried
+    to connect to a non-existent Wayland socket. The KWin wrapper publishes its
+    activation environment; we only accept XWayland values after the published
+    WAYLAND_DISPLAY matches the explicit seat socket passed by the launcher.
+    """
+    expected_wayland = os.environ.get("MSA_WAYLAND_DISPLAY") or os.environ.get(
+        "WAYLAND_DISPLAY", ""
+    )
+    if not expected_wayland:
+        return
+
     deadline = time.monotonic() + timeout
-    wanted = {"WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY"}
     while time.monotonic() < deadline:
         result = _run(["systemctl", "--user", "show-environment"])
         if result.returncode == 0:
-            found: set[str] = set()
+            values: dict[str, str] = {}
             for line in result.stdout.splitlines():
                 if "=" not in line:
                     continue
                 key, value = line.split("=", 1)
-                if key in wanted and value:
-                    os.environ[key] = value
-                    found.add(key)
-            if "WAYLAND_DISPLAY" in found:
+                if key in {"WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY"} and value:
+                    values[key] = value
+
+            if values.get("WAYLAND_DISPLAY") == expected_wayland:
+                for key in ("DISPLAY", "XAUTHORITY"):
+                    if values.get(key):
+                        os.environ[key] = values[key]
                 return
         time.sleep(0.2)
 
@@ -75,6 +91,12 @@ def _start_first(candidates: list[str], args: list[str] | None = None) -> subpro
     return None
 
 
+def _wayland_socket_ready() -> bool:
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    display = os.environ.get("WAYLAND_DISPLAY", "")
+    return bool(display and (runtime / display).exists())
+
+
 def main() -> int:
     runtime = Path(f"/run/user/{os.getuid()}")
     os.environ.setdefault("XDG_RUNTIME_DIR", str(runtime))
@@ -87,7 +109,16 @@ def main() -> int:
     os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
     os.environ.setdefault("MOZ_ENABLE_WAYLAND", "1")
 
-    _import_user_manager_environment()
+    expected = os.environ.get("MSA_WAYLAND_DISPLAY")
+    if expected:
+        # The launcher owns the source of truth. Do not let an old systemd-user
+        # environment silently redirect this seat to another compositor.
+        os.environ["WAYLAND_DISPLAY"] = expected
+
+    if not _wayland_socket_ready():
+        return 3
+
+    _import_matching_xwayland_environment()
     _sync_activation_environment()
 
     # These are the user-facing parts of a normal Plasma session. We avoid
@@ -107,7 +138,11 @@ def main() -> int:
         if proc is not None:
             children.append(proc)
 
-    if not any(Path(proc.args[0]).name == "plasmashell" for proc in children if isinstance(proc.args, list)):
+    if not any(
+        Path(proc.args[0]).name == "plasmashell"
+        for proc in children
+        if isinstance(proc.args, list)
+    ):
         return 2
 
     plasma = next(
