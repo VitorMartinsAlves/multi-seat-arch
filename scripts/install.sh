@@ -14,8 +14,9 @@ ENGINE_STAMP=/usr/local/share/multi-seat-arch/engine-version
 sudo pacman -S --needed --noconfirm \
   python python-pyqt6 python-pip python-evdev qt6-wayland \
   libinput systemd pciutils polkit acl xorg-xwayland util-linux bubblewrap \
-  lxqt-session lxqt-wayland-session lxqt-panel lxqt-runner lxqt-config lxqt-policykit \
-  pcmanfm-qt qterminal xfce4-terminal breeze-icons
+  lxqt-session lxqt-wayland-session lxqt-panel lxqt-runner lxqt-config lxqt-policykit lxqt-themes \
+  pcmanfm-qt qterminal xfce4-terminal \
+  breeze breeze-gtk breeze-icons noto-fonts noto-fonts-emoji
 
 # Steam pressure-vessel/Flatpak and Chromium-family sandboxes need working
 # unprivileged user namespaces. CachyOS kernels may expose more than one gate
@@ -79,5 +80,6 @@ sudo install -Dm644 \
   desktop/multi-seat-arch.desktop \
   /usr/share/applications/multi-seat-arch.desktop
 
-echo "Instalado. Abra 'Multi Seat Arch' no menu ou rode: multi-seat-arch-gui"
+echo "Instalado. Tema KDE-like será aplicado automaticamente uma vez para cada usuário/seat."
+echo "Abra 'Multi Seat Arch' no menu ou rode: multi-seat-arch-gui"
 multi-seat-arch doctor || true
