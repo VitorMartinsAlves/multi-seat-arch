@@ -1,0 +1,5 @@
+# Make inputX devices valid systemd-logind seat masters without modifying
+# systemd's vendor 71-seat.rules. This mirrors the requirement used by the
+# upstream single-GPU multiseat prototype, but keeps the change local and
+# reversible under /etc/udev/rules.d.
+SUBSYSTEM=="input", KERNEL=="input*", TAG+="seat", TAG+="master-of-seat"
