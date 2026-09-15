@@ -29,9 +29,7 @@ sudo pacman -S --needed --noconfirm \
   git base-devel cmake ninja extra-cmake-modules pkgconf \
   wayland-protocols plasma-workspace
 
-if ! pkg-config --exists libdlmclient; then
-  export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
-fi
+export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
 if ! pkg-config --exists libdlmclient; then
   echo "libdlmclient não foi encontrada. Rode primeiro: bash scripts/install.sh" >&2
   exit 3
@@ -64,10 +62,12 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
 cmake --build "$BUILD" -j"$(nproc)"
 DESTDIR="$STAGE" cmake --install "$BUILD"
 
-[[ -x "$STAGE/usr/bin/kwin_wayland" ]] || {
-  echo "Falha: kwin_wayland não apareceu no staging." >&2
-  exit 5
-}
+for binary in kwin_wayland kwin_wayland_wrapper; do
+  [[ -x "$STAGE/usr/bin/$binary" ]] || {
+    echo "Falha: $binary não apareceu no staging." >&2
+    exit 5
+  }
+done
 
 sudo rm -rf "$PREFIX"
 sudo install -d "$PREFIX"
@@ -77,23 +77,28 @@ sudo tee /usr/local/bin/kwin-wayland-msa >/dev/null <<'EOF'
 #!/usr/bin/env bash
 set -e
 ROOT=/opt/multi-seat-arch/kwin-plasma/usr
+export PATH="$ROOT/bin:$PATH"
 export LD_LIBRARY_PATH="$ROOT/lib:${LD_LIBRARY_PATH:-}"
 if [[ -d "$ROOT/lib/qt6/plugins" ]]; then
   export QT_PLUGIN_PATH="$ROOT/lib/qt6/plugins:${QT_PLUGIN_PATH:-}"
 fi
-exec "$ROOT/bin/kwin_wayland" "$@"
+# The wrapper owns the Wayland and XWayland listening sockets, exports
+# WAYLAND_DISPLAY/DISPLAY into the user's activation environment, then starts
+# the patched kwin_wayland found first in PATH.
+exec "$ROOT/bin/kwin_wayland_wrapper" --xwayland "$@"
 EOF
 sudo chmod 0755 /usr/local/bin/kwin-wayland-msa
 
 sudo install -d /usr/local/share/multi-seat-arch
 printf '%s\n' "$kwin_ver" | sudo tee /usr/local/share/multi-seat-arch/kwin-plasma-version >/dev/null
 
-if ! env LD_LIBRARY_PATH="$PREFIX/usr/lib:${LD_LIBRARY_PATH:-}" ldd "$PREFIX/usr/bin/kwin_wayland" | grep -q 'not found'; then
+missing=$(env LD_LIBRARY_PATH="$PREFIX/usr/lib:${LD_LIBRARY_PATH:-}" ldd "$PREFIX/usr/bin/kwin_wayland" | grep 'not found' || true)
+if [[ -z "$missing" ]]; then
   echo "KWin experimental instalado em $PREFIX"
   echo "Wrapper: /usr/local/bin/kwin-wayland-msa"
   echo "Versão: $kwin_ver"
 else
   echo "Falha: bibliotecas ausentes no KWin experimental:" >&2
-  env LD_LIBRARY_PATH="$PREFIX/usr/lib:${LD_LIBRARY_PATH:-}" ldd "$PREFIX/usr/bin/kwin_wayland" | grep 'not found' >&2 || true
+  echo "$missing" >&2
   exit 6
 fi
