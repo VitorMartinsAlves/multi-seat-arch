@@ -74,9 +74,9 @@ def _load_validated(path: str):
 
 
 def _apply_sync_transaction(config) -> None:
-    ensure_multiseat_running()
+    ensure_multiseat_running(config)
     with input_sync_lock():
-        ensure_multiseat_running()
+        ensure_multiseat_running(config)
         previous = _installed_config_or_none()
         cfg.save(config)
         try:
@@ -89,6 +89,7 @@ def _apply_sync_transaction(config) -> None:
                 ) from original
             cfg.save(previous)
             try:
+                ensure_multiseat_running(previous)
                 sync_devices_now(previous)
             except Exception as rollback_error:
                 raise RuntimeError(
