@@ -49,7 +49,7 @@ class DeviceUiTests(unittest.TestCase):
         ]
         groups = group_devices(values)
         self.assertEqual(len(groups), 1)
-        self.assertEqual(groups[0].name, "BY Tech Gaming")
+        self.assertEqual(groups[0].name, "BY Tech Gaming Keyboard")
         self.assertEqual(groups[0].keys, ["input-a", "input-b", "input-c"])
 
     def test_can_disable_grouping(self):
@@ -73,10 +73,10 @@ class DeviceUiTests(unittest.TestCase):
         self.assertFalse(is_useful_input(power))
         self.assertTrue(is_useful_input(keyboard))
 
-    def test_clean_name_removes_composite_suffixes(self):
+    def test_clean_name_removes_only_control_suffix(self):
         self.assertEqual(
             clean_device_name("Gaming Keyboard Consumer Control"),
-            "Gaming",
+            "Gaming Keyboard",
         )
 
 
