@@ -1,0 +1,1 @@
+Runtime input routing uses ephemeral udev ID_SEAT rules under /run/udev/rules.d. Restore removes the runtime rules and returns devices to seat0.
