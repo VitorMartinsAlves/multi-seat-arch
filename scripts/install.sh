@@ -15,8 +15,7 @@ sudo pacman -S --needed --noconfirm \
   python python-pyqt6 python-pip python-evdev qt6-wayland \
   libinput systemd pciutils polkit acl xorg-xwayland util-linux bubblewrap desktop-file-utils \
   lxqt-session lxqt-wayland-session lxqt-panel lxqt-runner lxqt-config lxqt-policykit lxqt-themes \
-  pcmanfm-qt qterminal xfce4-terminal \
-  breeze breeze-gtk breeze-icons noto-fonts noto-fonts-emoji
+  pcmanfm-qt qterminal xfce4-terminal
 
 sudo bash scripts/configure-userns.sh "$USER"
 
@@ -63,6 +62,6 @@ sudo python -m pip install --break-system-packages --disable-pip-version-check .
 
 sudo install -Dm644 desktop/multi-seat-arch.desktop /usr/share/applications/multi-seat-arch.desktop
 
-echo "Instalado. O perfil Plasma-like v2 será atualizado automaticamente por usuário/seat."
+echo "Instalado. O Multi Seat Arch não força mais tema visual; LXQt volta a controlar aparência, ícones e cores."
 echo "Abra 'Multi Seat Arch' no menu ou rode: multi-seat-arch-gui"
 multi-seat-arch doctor || true
