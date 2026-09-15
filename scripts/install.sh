@@ -13,40 +13,28 @@ ENGINE_STAMP=/usr/local/share/multi-seat-arch/engine-version
 
 sudo pacman -S --needed --noconfirm \
   python python-pyqt6 python-pip python-evdev qt6-wayland \
-  libinput systemd pciutils polkit acl xorg-xwayland util-linux bubblewrap \
+  libinput systemd pciutils polkit acl xorg-xwayland util-linux bubblewrap desktop-file-utils \
   lxqt-session lxqt-wayland-session lxqt-panel lxqt-runner lxqt-config lxqt-policykit lxqt-themes \
   pcmanfm-qt qterminal xfce4-terminal \
   breeze breeze-gtk breeze-icons noto-fonts noto-fonts-emoji
 
-# Steam pressure-vessel/Flatpak and Chromium-family sandboxes need working
-# unprivileged user namespaces. CachyOS kernels may expose more than one gate
-# (including AppArmor userns mediation), so validate the capability itself.
 sudo bash scripts/configure-userns.sh "$USER"
 
 echo uinput | sudo tee /etc/modules-load.d/multi-seat-arch.conf >/dev/null
 sudo modprobe uinput
 
-sudo install -Dm644 \
-  udev/70-multi-seat-arch-input-monitor.rules \
-  /etc/udev/rules.d/70-multi-seat-arch-input-monitor.rules
+sudo install -Dm644 udev/70-multi-seat-arch-input-monitor.rules /etc/udev/rules.d/70-multi-seat-arch-input-monitor.rules
+sudo install -Dm644 udev/72-multi-seat-arch-seat-master.rules /etc/udev/rules.d/72-multi-seat-arch-seat-master.rules
 
-sudo install -Dm644 \
-  udev/72-multi-seat-arch-seat-master.rules \
-  /etc/udev/rules.d/72-multi-seat-arch-seat-master.rules
-
-if systemctl list-unit-files multiseat.service --no-legend 2>/dev/null \
-  | grep -q '^multiseat\.service'; then
+if systemctl list-unit-files multiseat.service --no-legend 2>/dev/null | grep -q '^multiseat\.service'; then
   echo "Desabilitando serviço legado multiseat.service..."
   sudo systemctl disable --now multiseat.service || true
 fi
 
 LEGACY_RULE=/usr/lib/udev/rules.d/71-seat.rules
-if [[ -f "$LEGACY_RULE" ]] \
-  && grep -Fq 'SUBSYSTEM=="input", KERNEL=="input*", TAG+="seat", TAG+="master-of-seat"' "$LEGACY_RULE"; then
+if [[ -f "$LEGACY_RULE" ]] && grep -Fq 'SUBSYSTEM=="input", KERNEL=="input*", TAG+="seat", TAG+="master-of-seat"' "$LEGACY_RULE"; then
   echo "Revertendo alteração legada de 71-seat.rules..."
-  sudo sed -i \
-    's/SUBSYSTEM=="input", KERNEL=="input\*", TAG+="seat", TAG+="master-of-seat"/SUBSYSTEM=="input", KERNEL=="input*", TAG+="seat"/' \
-    "$LEGACY_RULE"
+  sudo sed -i 's/SUBSYSTEM=="input", KERNEL=="input\*", TAG+="seat", TAG+="master-of-seat"/SUBSYSTEM=="input", KERNEL=="input*", TAG+="seat"/' "$LEGACY_RULE"
 fi
 
 sudo udevadm control --reload
@@ -71,15 +59,10 @@ if (( engine_needs_build )); then
   sudo bash scripts/build-engine.sh
 fi
 
-sudo python -m pip install \
-  --break-system-packages \
-  --disable-pip-version-check \
-  .
+sudo python -m pip install --break-system-packages --disable-pip-version-check .
 
-sudo install -Dm644 \
-  desktop/multi-seat-arch.desktop \
-  /usr/share/applications/multi-seat-arch.desktop
+sudo install -Dm644 desktop/multi-seat-arch.desktop /usr/share/applications/multi-seat-arch.desktop
 
-echo "Instalado. Tema KDE-like será aplicado automaticamente uma vez para cada usuário/seat."
+echo "Instalado. O perfil Plasma-like v2 será atualizado automaticamente por usuário/seat."
 echo "Abra 'Multi Seat Arch' no menu ou rode: multi-seat-arch-gui"
 multi-seat-arch doctor || true
