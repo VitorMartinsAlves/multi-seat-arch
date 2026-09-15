@@ -18,6 +18,18 @@ sudo pacman -S --needed --noconfirm \
 echo uinput | sudo tee /etc/modules-load.d/multi-seat-arch.conf >/dev/null
 sudo modprobe uinput
 
+# ASTER-like activity identification needs read access to evdev nodes from the
+# active local desktop session. TAG+=uaccess delegates that ACL through logind;
+# it does not make /dev/input world-readable and inactive/remote users do not
+# receive the access grant.
+sudo install -Dm644 \
+  udev/70-multi-seat-arch-input-monitor.rules \
+  /etc/udev/rules.d/70-multi-seat-arch-input-monitor.rules
+sudo udevadm control --reload
+sudo udevadm trigger --subsystem-match=input --action=change || true
+# Ask logind/udev to settle so a GUI opened immediately after install sees ACLs.
+sudo udevadm settle || true
+
 if systemctl list-unit-files multiseat.service --no-legend 2>/dev/null \
   | grep -q '^multiseat\.service'; then
   echo "Desabilitando serviço legado multiseat.service..."
