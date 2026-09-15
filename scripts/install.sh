@@ -13,7 +13,9 @@ ENGINE_STAMP=/usr/local/share/multi-seat-arch/engine-version
 
 sudo pacman -S --needed --noconfirm \
   python python-pyqt6 python-pip python-evdev qt6-wayland \
-  libinput systemd pciutils polkit pcmanfm-qt xfce4-terminal acl
+  libinput systemd pciutils polkit acl xorg-xwayland \
+  lxqt-session lxqt-panel lxqt-runner lxqt-config lxqt-policykit \
+  pcmanfm-qt qterminal xfce4-terminal breeze-icons
 
 echo uinput | sudo tee /etc/modules-load.d/multi-seat-arch.conf >/dev/null
 sudo modprobe uinput
