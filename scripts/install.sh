@@ -8,7 +8,7 @@ fi
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-ENGINE_REV=direct-input-v1
+ENGINE_REV=direct-input-v2
 ENGINE_STAMP=/usr/local/share/multi-seat-arch/engine-version
 
 sudo pacman -S --needed --noconfirm \
