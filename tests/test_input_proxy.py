@@ -31,6 +31,22 @@ class InputProxyTests(unittest.TestCase):
             version=1,
         )
 
+    def test_event_syspath_returns_seat_eligible_input_parent(self):
+        proc = SimpleNamespace(
+            stdout=(
+                "/devices/pci0000:00/0000:00:14.0/usb1/1-4/1-4.2/"
+                "1-4.2:1.0/input/input6/event6\n"
+            ),
+            returncode=0,
+        )
+        with patch.object(input_proxy, "_run", return_value=proc):
+            path = input_proxy._event_syspath("/dev/input/event6")
+        self.assertEqual(
+            path,
+            "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-4/1-4.2/"
+            "1-4.2:1.0/input/input6",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
