@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -29,10 +30,13 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 def _event_syspath(event: str) -> str:
     output = _run("udevadm", "info", "--query=path", "--name", event).stdout.strip()
     if output.startswith("/devices/"):
-        return "/sys" + output
-    if output.startswith("/sys/devices/"):
-        return output
-    raise RuntimeError(f"Não foi possível resolver sysfs de {event}: {output}")
+        syspath = "/sys" + output
+    elif output.startswith("/sys/devices/"):
+        syspath = output
+    else:
+        raise RuntimeError(f"Não foi possível resolver sysfs de {event}: {output}")
+    # loginctl attach works on the seat-eligible inputN parent, not eventN.
+    return re.sub(r"/event\d+$", "", syspath)
 
 
 def _wait_uinput_path(ui: UInput, timeout: float = 5.0) -> str:
@@ -69,9 +73,6 @@ def _ready_path(path: str) -> Path:
 
 def _clone(device: EvdevDevice, seat: str) -> UInput:
     info = device.info
-    # input_props is important for touchpads (INPUT_PROP_POINTER/DIRECT/etc.).
-    # Without it a capability-identical clone may still be classified
-    # differently by libinput. Identity fields also help gamepads and HID quirks.
     return UInput.from_device(
         device,
         name=f"MSA Shared {device.name} [{seat}]",
@@ -104,8 +105,6 @@ def run_proxy(source: str, seats: list[str], ready_path: str) -> int:
     ready.unlink(missing_ok=True)
 
     try:
-        # EVIOCGRAB makes 'disabled' reliable and prevents the physical event
-        # node from also reaching seat0 while shared clones are active.
         device.grab()
 
         attached: dict[str, str] = {}
