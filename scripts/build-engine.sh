@@ -6,13 +6,11 @@ set -euo pipefail
   exit 1
 }
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 WORK=${WORK:-/var/lib/multi-seat-arch/build}
 JOBS=${JOBS:-$(nproc)}
 WLROOTS_REF=${WLROOTS_REF:-0.20.2}
 LABWC_REF=${LABWC_REF:-0.20.2}
-ENGINE_REV=direct-input-v1
+ENGINE_REV=direct-input-v2
 
 export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
 
@@ -160,24 +158,67 @@ else
   exit 2
 fi
 
-DIRECT_INPUT_PATCH="$REPO_DIR/patches/wlroots-direct-input.patch"
-if [[ ! -f "$DIRECT_INPUT_PATCH" ]]; then
-  echo "Falha: patch local de input não encontrado: $DIRECT_INPUT_PATCH" >&2
-  exit 8
-fi
-if git -C wlroots apply --check "$DIRECT_INPUT_PATCH"; then
-  git -C wlroots apply "$DIRECT_INPUT_PATCH"
-else
-  echo "O patch de input direto não é compatível com wlroots $WLROOTS_REF após o patch DRM lease." >&2
-  exit 9
-fi
+# Apply the small input-access delta by transforming the already-patched source.
+# This is deliberately not another unified patch: the upstream multiseat patch
+# changes the same function and made the old second patch fragile/corrupt.
+python - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("wlroots/backend/session/session.c")
+text = path.read_text(encoding="utf-8")
+
+marker = "Failed to directly open multiseat input"
+if marker not in text:
+    if "#include <fcntl.h>" not in text:
+        anchor = "#include <assert.h>\n"
+        if anchor not in text:
+            raise SystemExit("Não achei o bloco de includes esperado em session.c")
+        text = text.replace(anchor, anchor + "#include <fcntl.h>\n", 1)
+
+    pattern = re.compile(
+        r"(struct wlr_device \*wlr_session_open_file\(struct wlr_session \*session,\s*\n\s*const char \*path\) \{\n)"
+    )
+    match = pattern.search(text)
+    if not match:
+        raise SystemExit("Não achei wlr_session_open_file() em session.c")
+
+    block = r'''\t/* Multi Seat Arch: direct evdev open for DRM-lease seats. */
+\tconst char *drm_lease = getenv("DRM_LEASE");
+\tif (drm_lease && strncmp(path, "/dev/input/event", 16) == 0) {
+\t\tint input_fd = open(path, O_RDWR | O_CLOEXEC | O_NONBLOCK);
+\t\tif (input_fd < 0) {
+\t\t\twlr_log_errno(WLR_ERROR,
+\t\t\t\t"Failed to directly open multiseat input %s", path);
+\t\t\treturn NULL;
+\t\t}
+\t\tstruct wlr_device *input_dev = wlr_fd_to_device(session, input_fd);
+\t\tif (!input_dev) {
+\t\t\tclose(input_fd);
+\t\t\treturn NULL;
+\t\t}
+\t\treturn input_dev;
+\t}
+
+'''
+    text = text[:match.end()] + block + text[match.end():]
+
+close_old = "\tdlm_release_lease(dev->drm_lease);\n"
+close_new = "\tif (dev->drm_lease) {\n\t\tdlm_release_lease(dev->drm_lease);\n\t}\n"
+if close_new not in text:
+    if close_old not in text:
+        raise SystemExit("Não achei dlm_release_lease() esperado em session.c")
+    text = text.replace(close_old, close_new, 1)
+
+path.write_text(text, encoding="utf-8")
+PY
 
 grep -q 'getenv("DRM_LEASE")' wlroots/backend/session/session.c || {
   echo "Falha: patch DRM_LEASE não foi aplicado." >&2
   exit 3
 }
 grep -q 'Failed to directly open multiseat input' wlroots/backend/session/session.c || {
-  echo "Falha: patch de input direto não foi aplicado." >&2
+  echo "Falha: transformação de input direto não foi aplicada." >&2
   exit 10
 }
 grep -q "dependency('libdlmclient')" wlroots/meson.build || {
