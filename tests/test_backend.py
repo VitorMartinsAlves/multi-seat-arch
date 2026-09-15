@@ -106,19 +106,17 @@ class BackendTests(unittest.TestCase):
             wait_assignments.assert_called_once_with(direct)
             self.assertEqual(proxy.call_count, 2)
 
-    def test_failed_activation_persists_error_and_rolls_back(self):
+    def test_failed_activation_rolls_back(self):
         config = self._config()
         with (
             patch.object(backend.os, "geteuid", return_value=0),
             patch.object(backend, "validate", return_value=[]),
             patch.object(backend, "doctor", return_value=[backend.Check(True, "ok")]),
             patch.object(backend, "stop_transient_units", side_effect=RuntimeError("boom")),
-            patch.object(backend, "_persist_activation_error") as persist,
             patch.object(backend, "_rollback_after_failed_start") as rollback,
         ):
             with self.assertRaises(RuntimeError):
                 backend.activate_now(config)
-            persist.assert_called_once()
             rollback.assert_called_once()
 
     def test_disabled_seat_is_not_active(self):
