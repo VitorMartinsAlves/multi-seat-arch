@@ -10,6 +10,13 @@ _SUFFIX_RE = re.compile(
     r"\s+(?:system control|consumer control)$",
     re.IGNORECASE,
 )
+_SYSTEM_NAMES = (
+    "power button",
+    "sleep button",
+    "lid switch",
+    "video bus",
+    "pc speaker",
+)
 
 
 @dataclass(slots=True)
@@ -50,25 +57,14 @@ def icon_names(kind: str, bus: str = "") -> tuple[str, ...]:
 
 
 def is_system_device(device: InputDevice) -> bool:
-    """Classify low-level switches/buttons that normally should remain on seat0."""
-    if device.kind != "other":
-        return False
+    """Classify low-level controls that should normally remain on seat0."""
     low = device.name.lower()
-    return any(
-        token in low
-        for token in (
-            "power button",
-            "sleep button",
-            "lid switch",
-            "video bus",
-            "pc speaker",
-        )
-    )
+    return any(token in low for token in _SYSTEM_NAMES)
 
 
 def is_useful_input(device: InputDevice) -> bool:
     """Return whether automatic assignment should move this input to a user seat."""
-    return device.kind in _USEFUL_KINDS and not is_system_device(device)
+    return not is_system_device(device) and device.kind in _USEFUL_KINDS
 
 
 def group_devices(
