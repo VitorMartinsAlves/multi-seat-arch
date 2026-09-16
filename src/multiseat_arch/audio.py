@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -45,30 +46,34 @@ def _run(command: list[str], timeout: float = 8.0) -> subprocess.CompletedProces
 
 
 def _start_user_audio_stack() -> None:
-    """Best-effort activation of the normal PipeWire user stack.
-
-    Custom Plasma sessions do not start the complete plasma-workspace target, so
-    make sure the globally shipped user sockets/services are available before
-    declaring that no sinks exist. This is intentionally non-fatal: systems
-    using another Pulse-compatible server can still work through pactl.
-    """
     systemctl = shutil.which("systemctl")
     if not systemctl:
         return
-    for unit in (
-        "pipewire.socket",
-        "pipewire-pulse.socket",
-        "wireplumber.service",
-    ):
+    for unit in ("pipewire.socket", "pipewire-pulse.socket", "wireplumber.service"):
         _run([systemctl, "--user", "start", unit], timeout=4.0)
 
 
-def _parse_pactl_sinks(text: str) -> list[AudioOutput]:
+def _json_payload(text: str):
+    """Parse pactl JSON even when a backend prints a warning before it."""
+    stripped = text.lstrip("\ufeff\n\r\t ")
     try:
-        raw = json.loads(text)
+        return json.loads(stripped)
     except json.JSONDecodeError:
-        return []
+        pass
 
+    starts = [pos for pos in (stripped.find("["), stripped.find("{")) if pos >= 0]
+    if not starts:
+        return None
+    start = min(starts)
+    decoder = json.JSONDecoder()
+    try:
+        value, _end = decoder.raw_decode(stripped[start:])
+        return value
+    except json.JSONDecodeError:
+        return None
+
+
+def _outputs_from_json(raw) -> list[AudioOutput]:
     outputs: list[AudioOutput] = []
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
@@ -97,8 +102,89 @@ def _parse_pactl_sinks(text: str) -> list[AudioOutput]:
                 bus=bus,
             )
         )
+    return outputs
+
+
+def _parse_pactl_sinks(text: str) -> list[AudioOutput]:
+    outputs = _outputs_from_json(_json_payload(text))
     outputs.sort(key=lambda item: (item.description.lower(), item.name))
     return outputs
+
+
+def _parse_pactl_text(text: str) -> list[AudioOutput]:
+    """Fallback for pactl versions/backends whose JSON output is unavailable."""
+    outputs: list[AudioOutput] = []
+    current: dict[str, str] | None = None
+    in_properties = False
+
+    def flush() -> None:
+        nonlocal current
+        if not current or not current.get("name"):
+            current = None
+            return
+        outputs.append(
+            AudioOutput(
+                name=current["name"],
+                description=current.get("description") or current["name"],
+                state=(current.get("state") or "UNKNOWN").upper(),
+                bus=current.get("bus") or "",
+            )
+        )
+        current = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        if re.match(r"^Sink\s+#\d+", line):
+            flush()
+            current = {}
+            in_properties = False
+            continue
+        if current is None:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("Name:"):
+            current["name"] = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("Description:"):
+            current["description"] = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("State:"):
+            current["state"] = stripped.split(":", 1)[1].strip()
+        elif stripped == "Properties:":
+            in_properties = True
+        elif in_properties:
+            match = re.match(r'(device\.bus|device\.api|media\.class)\s*=\s*"?(.*?)"?$', stripped)
+            if match and not current.get("bus"):
+                current["bus"] = match.group(2)
+            elif stripped and not raw_line.startswith(("\t\t", "        ")):
+                in_properties = False
+    flush()
+    outputs.sort(key=lambda item: (item.description.lower(), item.name))
+    return outputs
+
+
+def _discover_once(pactl: str) -> tuple[list[AudioOutput], str, bool]:
+    json_result = _run([pactl, "-f", "json", "list", "sinks"])
+    if json_result.returncode == 0:
+        raw = _json_payload(json_result.stdout)
+        outputs = _outputs_from_json(raw)
+        if outputs:
+            outputs.sort(key=lambda item: (item.description.lower(), item.name))
+            return outputs, "", True
+        if isinstance(raw, list) and not raw:
+            return [], "PipeWire/Pulse está ativo, mas nenhuma saída de áudio foi publicada.", True
+
+    # Do not trust only JSON mode. Some pactl/PipeWire combinations accept the
+    # command but print non-JSON output or warnings. Plain pactl is stable.
+    text_result = _run([pactl, "list", "sinks"])
+    if text_result.returncode == 0:
+        outputs = _parse_pactl_text(text_result.stdout)
+        if outputs:
+            return outputs, "", True
+        if text_result.stdout.strip():
+            return [], "O servidor de áudio respondeu, mas nenhuma saída reconhecível foi encontrada.", True
+        return [], "PipeWire/Pulse está ativo, mas nenhuma saída de áudio foi publicada.", True
+
+    detail = (text_result.stdout or json_result.stdout).strip().replace("\n", " ")
+    return [], detail or "Servidor de áudio não está disponível nesta sessão.", False
 
 
 def discover_outputs_diagnostic(*, activate_stack: bool = True) -> tuple[list[AudioOutput], str]:
@@ -106,33 +192,17 @@ def discover_outputs_diagnostic(*, activate_stack: bool = True) -> tuple[list[Au
     if not pactl:
         return [], "pactl não encontrado. Reinstale o projeto para instalar libpulse."
 
-    result = _run([pactl, "-f", "json", "list", "sinks"])
-    if result.returncode and activate_stack:
-        _start_user_audio_stack()
-        # Give WirePlumber a short window to enumerate ALSA/HDMI/Bluetooth nodes.
-        for _ in range(6):
-            time.sleep(0.25)
-            result = _run([pactl, "-f", "json", "list", "sinks"])
-            if result.returncode == 0:
-                break
-
-    if result.returncode:
-        detail = result.stdout.strip().replace("\n", " ")
-        return [], detail or "Servidor de áudio não está disponível nesta sessão."
-
-    outputs = _parse_pactl_sinks(result.stdout)
+    outputs, detail, connected = _discover_once(pactl)
     if outputs:
         return outputs, ""
-
-    # A valid server with zero sinks is materially different from a parser/
-    # connection failure and is useful diagnostic information in the GUI.
-    try:
-        raw = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return [], "O servidor respondeu, mas o JSON de áudio não pôde ser interpretado."
-    if isinstance(raw, list) and not raw:
-        return [], "PipeWire/Pulse está ativo, mas nenhuma saída de áudio foi publicada."
-    return [], "Nenhuma saída de áudio reconhecível foi encontrada."
+    if activate_stack and not connected:
+        _start_user_audio_stack()
+        for _ in range(8):
+            time.sleep(0.25)
+            outputs, detail, connected = _discover_once(pactl)
+            if outputs or connected:
+                break
+    return outputs, detail
 
 
 def discover_outputs() -> list[AudioOutput]:
@@ -152,13 +222,7 @@ def load_rules() -> list[AudioRule]:
         output = str(raw.get("output") or "")
         seat = str(raw.get("seat") or "")
         if output and seat in {"seat-a", "seat-b", "unmanaged"}:
-            result.append(
-                AudioRule(
-                    output=output,
-                    seat=seat,
-                    description=str(raw.get("description") or ""),
-                )
-            )
+            result.append(AudioRule(output=output, seat=seat, description=str(raw.get("description") or "")))
     return result
 
 
@@ -221,7 +285,6 @@ def test_output(output_name: str) -> tuple[bool, str]:
         result = _run([paplay, f"--device={output_name}", wav], timeout=5.0)
         if result.returncode == 0:
             return True, result.stdout.strip()
-        # The server may have been sleeping/stopped since GUI discovery.
         _start_user_audio_stack()
         result = _run([paplay, f"--device={output_name}", wav], timeout=5.0)
         return result.returncode == 0, result.stdout.strip()
