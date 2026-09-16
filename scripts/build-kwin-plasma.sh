@@ -54,6 +54,7 @@ fi
 
 python "$REPO_DIR/scripts/patch-kwin-drm-lease.py" "$SRC"
 python "$REPO_DIR/scripts/patch-kwin-fixed-fd.py" "$SRC"
+python "$REPO_DIR/scripts/patch-kwin-xwayland-lease.py" "$SRC"
 
 grep -q 'MULTI_SEAT_ARCH_DRM_LEASE' "$SRC/src/core/session_logind.cpp" || {
   echo "Falha: patch de lease no LogindSession não foi aplicado." >&2
@@ -65,6 +66,10 @@ grep -q 'MULTI_SEAT_ARCH_FIXED_LEASE_FD_198' "$SRC/src/core/session_logind.cpp" 
 }
 grep -q 'MULTI_SEAT_ARCH_DRMDEVICE_LEASE_FD' "$SRC/src/core/drmdevice.cpp" || {
   echo "Falha: patch de lease no DrmDevice não foi aplicado." >&2
+  exit 5
+}
+grep -q 'MULTI_SEAT_ARCH_XWAYLAND_LEASE_FD' "$SRC/src/backends/drm/drm_gpu.cpp" || {
+  echo "Falha: patch do fd DRM para XWayland não foi aplicado." >&2
   exit 5
 }
 
@@ -108,14 +113,14 @@ EOF
 sudo chmod 0755 /usr/local/bin/kwin-wayland-msa
 
 sudo install -d /usr/local/share/multi-seat-arch
-printf '%s\n' "$kwin_ver-fixed-fd198-xwayland-wrapper" | sudo tee /usr/local/share/multi-seat-arch/kwin-plasma-version >/dev/null
+printf '%s\n' "$kwin_ver-fixed-fd198-xwayland-lease-v2" | sudo tee /usr/local/share/multi-seat-arch/kwin-plasma-version >/dev/null
 
 missing=$(env LD_LIBRARY_PATH="$PREFIX/usr/lib:${LD_LIBRARY_PATH:-}" ldd "$PREFIX/usr/bin/kwin_wayland" | grep 'not found' || true)
 if [[ -z "$missing" ]]; then
   echo "KWin experimental instalado em $PREFIX"
   echo "Launcher: /usr/local/bin/kwin-wayland-msa -> kwin_wayland_wrapper --xwayland"
-  echo "Versão: $kwin_ver (fixed DRM lease fd 198 + XWayland wrapper)"
-  echo "Patch externo validado em LogindSession + DrmDevice."
+  echo "Versão: $kwin_ver (fixed DRM lease fd 198 + XWayland lease fd)"
+  echo "Patch externo validado em LogindSession + DrmDevice + DrmGpu/XWayland."
 else
   echo "Falha: bibliotecas ausentes no KWin experimental:" >&2
   echo "$missing" >&2
