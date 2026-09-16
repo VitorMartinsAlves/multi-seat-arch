@@ -67,6 +67,7 @@ def _sync_activation_environment() -> None:
         "XDG_SESSION_DESKTOP",
         "XDG_SESSION_TYPE",
         "XDG_SEAT",
+        "XDG_DATA_DIRS",
         "KDE_FULL_SESSION",
         "KDE_SESSION_VERSION",
     ]
@@ -75,6 +76,28 @@ def _sync_activation_environment() -> None:
         _run(["dbus-update-activation-environment", "--systemd", *available])
     if shutil.which("systemctl") and available:
         _run(["systemctl", "--user", "import-environment", *available])
+
+
+def _refresh_application_database() -> None:
+    """Populate KDE's service cache for custom Plasma sessions.
+
+    startplasma normally prepares the XDG data paths and rebuilds KSycoca.
+    This project intentionally bypasses startplasma so it can keep the patched
+    per-seat KWin instance alive; do the relevant application-cache step here.
+    """
+    data_dirs = os.environ.get("XDG_DATA_DIRS", "").strip()
+    defaults = ["/usr/local/share", "/usr/share"]
+    current = [part for part in data_dirs.split(":") if part]
+    for item in defaults:
+        if item not in current:
+            current.append(item)
+    os.environ["XDG_DATA_DIRS"] = ":".join(current)
+
+    for candidate in ("kbuildsycoca6", "kbuildsycoca5"):
+        binary = shutil.which(candidate)
+        if binary:
+            _run([binary, "--noincremental"])
+            break
 
 
 def _start_first(candidates: list[str], args: list[str] | None = None) -> subprocess.Popen | None:
@@ -118,6 +141,7 @@ def main() -> int:
     if not _wayland_socket_ready():
         return 3
 
+    _refresh_application_database()
     _import_matching_xwayland_environment()
     _sync_activation_environment()
 
