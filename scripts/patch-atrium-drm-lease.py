@@ -29,7 +29,7 @@ def patch_tree(root: Path) -> None:
     helper_h = root / "daemon/session/msa_drm_lease.h"
     helper_c = root / "daemon/session/msa_drm_lease.c"
     helper_h.write_text(
-        """#pragma once\n\n"
+        "#pragma once\n\n"
         "int msa_drm_lease_env(const char *seat_name, char **fd_env, char **name_env);\n",
         encoding="utf-8",
     )
@@ -112,7 +112,6 @@ int msa_drm_lease_env(const char *seat_name, char **fd_env, char **name_env) {{
             "    dep_inih,\n    dep_libpam,\n    dep_libsystemd,\n    dep_libudev,\n    dep_dlmclient,",
             "atrium lease dependency",
         )
-        # atrium-start-session compiles the same greeter/compositor sources.
         second_anchor = "    'daemon/session/lock.c',\n    'daemon/session/session_runner.c',"
         if second_anchor in meson_text:
             meson_text = meson_text.replace(
