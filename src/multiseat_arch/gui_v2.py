@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import getpass
 import json
-import sys
 import tempfile
 from pathlib import Path
 
@@ -18,13 +17,21 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from . import config as cfg
-from .audio import AudioOutput, AudioRule, discover_outputs, load_rules, test_output
+from .audio import (
+    AudioOutput,
+    AudioRule,
+    discover_outputs_diagnostic,
+    load_rules,
+    test_output,
+)
 from .gui import MainWindow
 from .model import Config, Seat
 
@@ -36,21 +43,25 @@ class DynamicMainWindow(MainWindow):
         self.audio_outputs: list[AudioOutput] = []
         self.audio_rules: dict[str, AudioRule] = {rule.output: rule for rule in load_rules()}
         self.audio_row_for_output: dict[str, int] = {}
+        self.audio_error = ""
         super().__init__()
+        self.setMinimumSize(980, 680)
         self.audio_timer = QTimer(self)
         self.audio_timer.timeout.connect(self.refresh_audio_live)
-        self.audio_timer.start(900)
+        self.audio_timer.start(1200)
         self.refresh_audio_live(force=True)
 
     def _seat_panel(self, title: str, seat_name: str) -> dict:
         widget = QFrame()
         widget.setFrameShape(QFrame.Shape.StyledPanel)
         layout = QVBoxLayout(widget)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
 
         row = QHBoxLayout()
         layout.addLayout(row)
         heading = QLabel(title)
-        heading.setStyleSheet("font-size: 20px; font-weight: 650")
+        heading.setStyleSheet("font-size: 18px; font-weight: 650")
         row.addWidget(heading)
         row.addStretch(1)
         enabled = QCheckBox("Ativo")
@@ -63,21 +74,13 @@ class DynamicMainWindow(MainWindow):
 
         login = QLabel("Login dinâmico • qualquer usuário local")
         login.setStyleSheet(
-            "padding:7px 9px;border-radius:7px;background:palette(alternate-base);font-weight:600"
+            "padding:6px 8px;border-radius:6px;background:palette(alternate-base);font-weight:600"
         )
         login.setToolTip(
             "Este seat pertence à tela e aos periféricos, não a uma conta. "
             "Após logout, o greeter volta e permite escolher outro usuário."
         )
         layout.addWidget(login)
-
-        hint = QLabel(
-            "A estação é presa ao monitor, periféricos e áudio. O usuário é escolhido "
-            "na tela de login e pode ser trocado livremente após logout."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid)")
-        layout.addWidget(hint)
 
         enabled.toggled.connect(monitor.setEnabled)
         return {
@@ -88,12 +91,24 @@ class DynamicMainWindow(MainWindow):
         }
 
     def _build(self) -> None:
+        # Build the proven base UI first, then convert the large central sections
+        # into tabs. This keeps the existing input-management logic unchanged
+        # while preventing peripherals and audio from fighting for vertical space.
         super()._build()
         outer = self.centralWidget().layout()
 
-        audio_box = QFrame()
-        audio_box.setFrameShape(QFrame.Shape.StyledPanel)
-        audio_layout = QVBoxLayout(audio_box)
+        # Base layout indices are stable here: title, subtitle, seats, peripherals,
+        # status, actions. Remove the peripheral widget and place it in a tab.
+        peripheral_item = outer.takeAt(3)
+        peripheral_box = peripheral_item.widget() if peripheral_item else None
+        if peripheral_box is None:
+            raise RuntimeError("Painel de periféricos não encontrado na GUI base.")
+
+        audio_page = QWidget()
+        audio_layout = QVBoxLayout(audio_page)
+        audio_layout.setContentsMargins(8, 8, 8, 8)
+        audio_layout.setSpacing(8)
+
         header = QHBoxLayout()
         audio_layout.addLayout(header)
         heading = QLabel("Áudio")
@@ -105,12 +120,20 @@ class DynamicMainWindow(MainWindow):
         header.addWidget(self.audio_status)
 
         info = QLabel(
-            "Caixas de som, HDMI e fones ficam verdes enquanto a saída está em uso. "
-            "Use Testar para identificar fisicamente cada dispositivo antes de atribuí-lo ao seat."
+            "As saídas ficam verdes enquanto estão reproduzindo áudio. Use Testar para "
+            "descobrir fisicamente qual é cada caixa de som, HDMI ou fone antes de atribuir ao seat."
         )
         info.setWordWrap(True)
         info.setStyleSheet("color: palette(mid)")
         audio_layout.addWidget(info)
+
+        self.audio_error_label = QLabel("")
+        self.audio_error_label.setWordWrap(True)
+        self.audio_error_label.setStyleSheet(
+            "padding:8px;border-radius:6px;background:palette(alternate-base);color:#e0a020"
+        )
+        self.audio_error_label.hide()
+        audio_layout.addWidget(self.audio_error_label)
 
         self.audio_table = QTableWidget(0, 5)
         self.audio_table.setHorizontalHeaderLabels(
@@ -118,13 +141,23 @@ class DynamicMainWindow(MainWindow):
         )
         self.audio_table.verticalHeader().setVisible(False)
         self.audio_table.setAlternatingRowColors(True)
+        self.audio_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.audio_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for col in (1, 2, 3, 4):
             self.audio_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
-        audio_layout.addWidget(self.audio_table)
+        audio_layout.addWidget(self.audio_table, 1)
 
-        # base layout: title, subtitle, seats, peripherals, status, actions...
-        outer.insertWidget(4, audio_box)
+        retry = QPushButton("Redetectar áudio")
+        retry.clicked.connect(lambda: self.refresh_audio_live(force=True))
+        audio_layout.addWidget(retry)
+
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.addTab(peripheral_box, "Periféricos")
+        tabs.addTab(audio_page, "Áudio")
+        tabs.setMinimumHeight(300)
+        self.main_tabs = tabs
+        outer.insertWidget(3, tabs, 1)
 
     def _load_saved_config(self) -> None:
         try:
@@ -151,8 +184,6 @@ class DynamicMainWindow(MainWindow):
             self.b["monitor"].setCurrentIndex(1)
 
     def build_config(self) -> Config:
-        # 'user' remains only as a legacy serialization field. Dynamic-login
-        # runtime deliberately ignores it.
         legacy_user = getpass.getuser()
         seats = [
             Seat(
@@ -200,13 +231,18 @@ class DynamicMainWindow(MainWindow):
 
             self.audio_table.setCellWidget(row, 3, self._audio_destination_combo(output))
             test = QPushButton("▶ Testar")
-            test.setToolTip("Toca um bip somente nesta saída para você identificar qual é.")
+            test.setToolTip("Toca um bip somente nesta saída para identificar qual dispositivo físico é.")
             test.clicked.connect(lambda _checked=False, out=output: self.test_audio_output(out))
             self.audio_table.setCellWidget(row, 4, test)
-            self.audio_table.setRowHeight(row, 38)
+            self.audio_table.setRowHeight(row, 40)
             self._paint_audio_activity(row, output.state == "RUNNING")
 
         self.audio_status.setText(f"{len(self.audio_outputs)} saída(s) detectada(s)")
+        if self.audio_error:
+            self.audio_error_label.setText("Diagnóstico: " + self.audio_error)
+            self.audio_error_label.show()
+        else:
+            self.audio_error_label.hide()
 
     def _paint_audio_activity(self, row: int, active: bool) -> None:
         brush = QBrush(QColor(46, 125, 50, 110)) if active else QBrush()
@@ -216,7 +252,8 @@ class DynamicMainWindow(MainWindow):
                 item.setBackground(brush)
 
     def refresh_audio_live(self, *, force: bool = False) -> None:
-        outputs = discover_outputs()
+        outputs, error = discover_outputs_diagnostic(activate_stack=force or not self.audio_outputs)
+        self.audio_error = error
         old_signature = [(o.name, o.description, o.bus) for o in self.audio_outputs]
         new_signature = [(o.name, o.description, o.bus) for o in outputs]
         if force or old_signature != new_signature:
@@ -225,6 +262,11 @@ class DynamicMainWindow(MainWindow):
             return
 
         self.audio_outputs = outputs
+        if error:
+            self.audio_error_label.setText("Diagnóstico: " + error)
+            self.audio_error_label.show()
+        else:
+            self.audio_error_label.hide()
         by_name = {o.name: o for o in outputs}
         for name, row in self.audio_row_for_output.items():
             output = by_name.get(name)
@@ -250,8 +292,6 @@ class DynamicMainWindow(MainWindow):
             )
 
     def _save_audio_rules(self) -> bool:
-        # Keep disconnected remembered outputs as well; this lets HDMI/USB audio
-        # regain its seat assignment after a reconnect.
         payload = {
             "version": 1,
             "outputs": [
@@ -296,7 +336,7 @@ class DynamicMainWindow(MainWindow):
 
 
 def main() -> None:
-    app = QApplication(sys.argv)
+    app = QApplication([])
     window = DynamicMainWindow()
     window.show()
     raise SystemExit(app.exec())
