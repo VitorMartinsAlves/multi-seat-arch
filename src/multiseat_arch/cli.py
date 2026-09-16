@@ -138,6 +138,25 @@ def _set_compositor(path: str) -> None:
     cfg.save(config)
 
 
+def _prepare_dynamic_login(config) -> None:
+    """Validate the Plasma/Atrium login path before scheduling activation.
+
+    Activation runs later in a transient systemd unit. If this validation were
+    deferred until that unit, the GUI would report that startup was scheduled
+    and then appear to do nothing when Atrium/KWin prerequisites were missing.
+    Fail here while pkexec is still attached to the GUI so the real error is
+    shown immediately.
+    """
+    if not Path(PLASMA_EXPERIMENTAL).is_file():
+        raise RuntimeError(
+            "KWin experimental não está instalado. Rode: bash scripts/build-kwin-plasma.sh"
+        )
+    config.compositor = PLASMA_EXPERIMENTAL
+    # enable() also validates Atrium and both login wrappers before writing the
+    # mode marker/configuration, so any missing component is reported now.
+    dynamic_login.enable()
+
+
 def main() -> int:
     args = _build_parser().parse_args()
 
@@ -218,6 +237,7 @@ def main() -> int:
                 print("Configuração salva e periféricos sincronizados.")
             elif args.cmd == "apply-start":
                 before_activation()
+                _prepare_dynamic_login(config)
                 cfg.save(config)
                 start(config)
                 print("Configuração salva e inicialização agendada.")
@@ -228,7 +248,10 @@ def main() -> int:
 
         if args.cmd == "start":
             before_activation()
-            start(cfg.load())
+            config = cfg.load()
+            _prepare_dynamic_login(config)
+            cfg.save(config)
+            start(config)
             print("Inicialização agendada.")
             return 0
 
