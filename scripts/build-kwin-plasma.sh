@@ -82,6 +82,10 @@ DESTDIR="$STAGE" cmake --install "$BUILD"
   echo "Falha: kwin_wayland não apareceu no staging." >&2
   exit 6
 }
+[[ -x "$STAGE/usr/bin/kwin_wayland_wrapper" ]] || {
+  echo "Falha: kwin_wayland_wrapper não apareceu no staging." >&2
+  exit 6
+}
 
 sudo rm -rf "$PREFIX"
 sudo install -d "$PREFIX"
@@ -96,19 +100,21 @@ export LD_LIBRARY_PATH="$ROOT/lib:${LD_LIBRARY_PATH:-}"
 if [[ -d "$ROOT/lib/qt6/plugins" ]]; then
   export QT_PLUGIN_PATH="$ROOT/lib/qt6/plugins:${QT_PLUGIN_PATH:-}"
 fi
-# Direct exec is intentional: fd 198 is the inherited DRM lease capability.
-exec "$ROOT/bin/kwin_wayland" --xwayland "$@"
+# Use KDE's wrapper: it allocates the per-session XWayland display and
+# Xauthority before launching kwin_wayland. The DRM lease remains on inherited
+# fixed fd 198 for the patched KWin child.
+exec "$ROOT/bin/kwin_wayland_wrapper" --xwayland "$@"
 EOF
 sudo chmod 0755 /usr/local/bin/kwin-wayland-msa
 
 sudo install -d /usr/local/share/multi-seat-arch
-printf '%s\n' "$kwin_ver-fixed-fd198" | sudo tee /usr/local/share/multi-seat-arch/kwin-plasma-version >/dev/null
+printf '%s\n' "$kwin_ver-fixed-fd198-xwayland-wrapper" | sudo tee /usr/local/share/multi-seat-arch/kwin-plasma-version >/dev/null
 
 missing=$(env LD_LIBRARY_PATH="$PREFIX/usr/lib:${LD_LIBRARY_PATH:-}" ldd "$PREFIX/usr/bin/kwin_wayland" | grep 'not found' || true)
 if [[ -z "$missing" ]]; then
   echo "KWin experimental instalado em $PREFIX"
-  echo "Wrapper direto: /usr/local/bin/kwin-wayland-msa"
-  echo "Versão: $kwin_ver (fixed DRM lease fd 198)"
+  echo "Launcher: /usr/local/bin/kwin-wayland-msa -> kwin_wayland_wrapper --xwayland"
+  echo "Versão: $kwin_ver (fixed DRM lease fd 198 + XWayland wrapper)"
   echo "Patch externo validado em LogindSession + DrmDevice."
 else
   echo "Falha: bibliotecas ausentes no KWin experimental:" >&2
