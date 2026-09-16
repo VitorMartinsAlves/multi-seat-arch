@@ -69,6 +69,30 @@ def _start_kwin(*, greeter: bool) -> tuple[subprocess.Popen, dict[str, str]]:
     return proc, client_env
 
 
+def _restore_user_runtime(env: dict[str, str]) -> None:
+    """Keep the seat-specific Wayland socket while restoring the user's runtime.
+
+    KWin needs an isolated XDG_RUNTIME_DIR so two compositors owned by the same
+    login user do not race for wayland-0. Plasma applications, however, must use
+    /run/user/<uid> for the user bus, PipeWire and pipewire-pulse sockets.
+
+    WAYLAND_DISPLAY accepts an absolute socket path, so point it at KWin's
+    isolated socket before switching XDG_RUNTIME_DIR back to the normal user
+    runtime directory.
+    """
+    isolated_runtime = Path(env.get("XDG_RUNTIME_DIR", ""))
+    display = env.get("WAYLAND_DISPLAY", "")
+    if isolated_runtime and display and not os.path.isabs(display):
+        env["WAYLAND_DISPLAY"] = str(isolated_runtime / display)
+
+    user_runtime = Path(f"/run/user/{os.getuid()}")
+    env["XDG_RUNTIME_DIR"] = str(user_runtime)
+
+    # Do not carry a stale Pulse override from the greeter environment. Pulse
+    # compatibility will then resolve to /run/user/<uid>/pulse/native normally.
+    env.pop("PULSE_SERVER", None)
+
+
 def greeter_main() -> int:
     kwin: subprocess.Popen | None = None
     child: subprocess.Popen | None = None
@@ -107,6 +131,11 @@ def plasma_main() -> int:
         env.pop("KWIN_DRM_LEASE_FD", None)
         env.pop("KWIN_DRM_LEASE", None)
         env.pop("KWIN_DRM_DEVICES", None)
+
+        # Only KWin stays on the isolated per-seat runtime. Restore the normal
+        # user runtime for Plasma so DBus, PipeWire and Pulse sockets resolve.
+        _restore_user_runtime(env)
+
         session = subprocess.Popen([helper], env=env)
         return session.wait()
     except Exception as exc:
