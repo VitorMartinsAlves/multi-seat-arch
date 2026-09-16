@@ -53,9 +53,14 @@ else
 fi
 
 python "$REPO_DIR/scripts/patch-kwin-drm-lease.py" "$SRC"
+python "$REPO_DIR/scripts/patch-kwin-fixed-fd.py" "$SRC"
 
 grep -q 'MULTI_SEAT_ARCH_DRM_LEASE' "$SRC/src/core/session_logind.cpp" || {
   echo "Falha: patch de lease no LogindSession não foi aplicado." >&2
+  exit 5
+}
+grep -q 'MULTI_SEAT_ARCH_FIXED_LEASE_FD_198' "$SRC/src/core/session_logind.cpp" || {
+  echo "Falha: fallback de lease por fd fixo não foi aplicado." >&2
   exit 5
 }
 grep -q 'MULTI_SEAT_ARCH_DRMDEVICE_LEASE_FD' "$SRC/src/core/drmdevice.cpp" || {
@@ -91,21 +96,19 @@ export LD_LIBRARY_PATH="$ROOT/lib:${LD_LIBRARY_PATH:-}"
 if [[ -d "$ROOT/lib/qt6/plugins" ]]; then
   export QT_PLUGIN_PATH="$ROOT/lib/qt6/plugins:${QT_PLUGIN_PATH:-}"
 fi
-# Direct exec is intentional: KWIN_DRM_LEASE_FD is an inherited capability.
-# Do not insert kwin_wayland_wrapper or another launcher between Atrium and
-# kwin_wayland, otherwise the lease fd/environment may be lost.
+# Direct exec is intentional: fd 198 is the inherited DRM lease capability.
 exec "$ROOT/bin/kwin_wayland" --xwayland "$@"
 EOF
 sudo chmod 0755 /usr/local/bin/kwin-wayland-msa
 
 sudo install -d /usr/local/share/multi-seat-arch
-printf '%s\n' "$kwin_ver" | sudo tee /usr/local/share/multi-seat-arch/kwin-plasma-version >/dev/null
+printf '%s\n' "$kwin_ver-fixed-fd198" | sudo tee /usr/local/share/multi-seat-arch/kwin-plasma-version >/dev/null
 
 missing=$(env LD_LIBRARY_PATH="$PREFIX/usr/lib:${LD_LIBRARY_PATH:-}" ldd "$PREFIX/usr/bin/kwin_wayland" | grep 'not found' || true)
 if [[ -z "$missing" ]]; then
   echo "KWin experimental instalado em $PREFIX"
   echo "Wrapper direto: /usr/local/bin/kwin-wayland-msa"
-  echo "Versão: $kwin_ver"
+  echo "Versão: $kwin_ver (fixed DRM lease fd 198)"
   echo "Patch externo validado em LogindSession + DrmDevice."
 else
   echo "Falha: bibliotecas ausentes no KWin experimental:" >&2
