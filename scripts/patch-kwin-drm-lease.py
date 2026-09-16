@@ -69,28 +69,25 @@ def patch_tree(root: Path) -> None:
             text = replace_once(text, namespace_anchor, fallback, "dlm include fallback")
 
         namespace_anchor = "namespace KWin\n{"
-        globals_block = f'''namespace KWin\n{{\n\n// {MARKER}\n// Keep one lease handle for every duplicated fd handed to KWin. The handle\n// owns the manager-side lease; the duplicated fd is what KWin uses for KMS.\nstatic std::unordered_map<int, dlm_lease *> s_multiSeatLeases;\n'''
+        globals_block = f'''namespace KWin\n{{\n\n// {MARKER}\n// Map every duplicated fd handed to KWin to the optional libdlmclient handle\n// that owns it. A nullptr value means the display manager pre-opened the lease\n// as root and passed KWIN_DRM_LEASE_FD across the privilege drop.\nstatic std::unordered_map<int, dlm_lease *> s_multiSeatLeases;\n'''
         text = replace_once(text, namespace_anchor, globals_block, "lease handle table")
 
         open_sig = "std::expected<int, Session::Error> LogindSession::openRestricted(const QString &fileName)\n{"
-        open_body = '''std::expected<int, Session::Error> LogindSession::openRestricted(const QString &fileName)\n{\n    const QByteArray leaseName = qgetenv("KWIN_DRM_LEASE");\n    if (!leaseName.isEmpty() && fileName.startsWith(QLatin1StringView("/dev/dri/card"))) {\n        dlm_lease *lease = dlm_get_lease(leaseName.constData());\n        if (!lease) {\n            qCWarning(KWIN_CORE, "Failed to acquire external DRM lease %s for %s: %s",\n                      leaseName.constData(), qPrintable(fileName), strerror(errno));\n            return std::unexpected(Error::Other);\n        }\n        const int leaseFd = dlm_lease_fd(lease);\n        if (leaseFd < 0) {\n            dlm_release_lease(lease);\n            return std::unexpected(Error::Other);\n        }\n        const int ret = fcntl(leaseFd, F_DUPFD_CLOEXEC, 0);\n        if (ret < 0) {\n            dlm_release_lease(lease);\n            return std::unexpected(errorFromErrno());\n        }\n        s_multiSeatLeases.emplace(ret, lease);\n        qCInfo(KWIN_CORE, "Using external DRM lease %s for %s (fd=%d)",\n               leaseName.constData(), qPrintable(fileName), ret);\n        return ret;\n    }'''
+        open_body = '''std::expected<int, Session::Error> LogindSession::openRestricted(const QString &fileName)\n{\n    const QByteArray inheritedLeaseFdValue = qgetenv("KWIN_DRM_LEASE_FD");\n    if (!inheritedLeaseFdValue.isEmpty() && fileName.startsWith(QLatin1StringView("/dev/dri/card"))) {\n        bool ok = false;\n        const int inheritedLeaseFd = inheritedLeaseFdValue.toInt(&ok);\n        if (!ok || inheritedLeaseFd < 0 || fcntl(inheritedLeaseFd, F_GETFD) < 0) {\n            qCWarning(KWIN_CORE, "Invalid inherited DRM lease fd '%s' for %s",\n                      inheritedLeaseFdValue.constData(), qPrintable(fileName));\n            return std::unexpected(Error::Other);\n        }\n        const int ret = fcntl(inheritedLeaseFd, F_DUPFD_CLOEXEC, 0);\n        if (ret < 0) {\n            return std::unexpected(errorFromErrno());\n        }\n        s_multiSeatLeases.emplace(ret, nullptr);\n        qCInfo(KWIN_CORE, "Using display-manager DRM lease fd %d for %s (dup=%d)",\n               inheritedLeaseFd, qPrintable(fileName), ret);\n        return ret;\n    }\n\n    const QByteArray leaseName = qgetenv("KWIN_DRM_LEASE");\n    if (!leaseName.isEmpty() && fileName.startsWith(QLatin1StringView("/dev/dri/card"))) {\n        dlm_lease *lease = dlm_get_lease(leaseName.constData());\n        if (!lease) {\n            qCWarning(KWIN_CORE, "Failed to acquire external DRM lease %s for %s: %s",\n                      leaseName.constData(), qPrintable(fileName), strerror(errno));\n            return std::unexpected(Error::Other);\n        }\n        const int leaseFd = dlm_lease_fd(lease);\n        if (leaseFd < 0) {\n            dlm_release_lease(lease);\n            return std::unexpected(Error::Other);\n        }\n        const int ret = fcntl(leaseFd, F_DUPFD_CLOEXEC, 0);\n        if (ret < 0) {\n            dlm_release_lease(lease);\n            return std::unexpected(errorFromErrno());\n        }\n        s_multiSeatLeases.emplace(ret, lease);\n        qCInfo(KWIN_CORE, "Using external DRM lease %s for %s (fd=%d)",\n               leaseName.constData(), qPrintable(fileName), ret);\n        return ret;\n    }'''
         text = replace_once(text, open_sig, open_body, "openRestricted external lease")
 
         close_sig = "void LogindSession::closeRestricted(int fileDescriptor)\n{"
-        close_body = '''void LogindSession::closeRestricted(int fileDescriptor)\n{\n    if (const auto it = s_multiSeatLeases.find(fileDescriptor); it != s_multiSeatLeases.end()) {\n        close(fileDescriptor);\n        dlm_release_lease(it->second);\n        s_multiSeatLeases.erase(it);\n        return;\n    }'''
+        close_body = '''void LogindSession::closeRestricted(int fileDescriptor)\n{\n    if (const auto it = s_multiSeatLeases.find(fileDescriptor); it != s_multiSeatLeases.end()) {\n        close(fileDescriptor);\n        if (it->second) {\n            dlm_release_lease(it->second);\n        }\n        s_multiSeatLeases.erase(it);\n        return;\n    }'''
         text = replace_once(text, close_sig, close_body, "closeRestricted external lease")
         logind.write_text(text, encoding="utf-8")
 
     # KWin 6.7.x opens the DRM node a second time in DrmDevice::openWithAuthentication().
-    # On seat A this happened to succeed through existing device permissions and then
-    # drmAuthMagic failed against the lease fd. On seat B the raw open itself returned
-    # EACCES, so KWin reported "No suitable DRM devices have been found". When an
-    # external lease is active, authenticatedFd is already the lease fd returned by our
-    # patched LogindSession. Reuse that fd directly instead of reopening /dev/dri/cardX.
+    # When either libdlmclient or the display manager supplied the authenticated
+    # lease fd, reuse it directly instead of reopening /dev/dri/cardX.
     device_text = drmdevice.read_text(encoding="utf-8")
     if DRMDEVICE_MARKER not in device_text:
         open_anchor = '''std::unique_ptr<DrmDevice> DrmDevice::openWithAuthentication(const QString &path, int authenticatedFd)\n{\n    FileDescriptor fd(::open(path.toLocal8Bit(), O_RDWR | O_CLOEXEC));\n    if (!fd.isValid()) {\n        qCWarning(KWIN_CORE, "Failed to open drm node %s: %s", qPrintable(path), strerror(errno));\n        return nullptr;\n    }'''
-        open_replacement = f'''std::unique_ptr<DrmDevice> DrmDevice::openWithAuthentication(const QString &path, int authenticatedFd)\n{{\n    // {DRMDEVICE_MARKER}\n    const QByteArray leaseName = qgetenv("KWIN_DRM_LEASE");\n    const bool useExternalLease = !leaseName.isEmpty()\n        && authenticatedFd >= 0\n        && path.startsWith(QLatin1StringView("/dev/dri/card"));\n\n    FileDescriptor fd;\n    if (useExternalLease) {{\n        const int duplicatedFd = fcntl(authenticatedFd, F_DUPFD_CLOEXEC, 0);\n        if (duplicatedFd < 0) {{\n            qCWarning(KWIN_CORE, "Failed to duplicate external DRM lease fd for %s: %s",\n                      qPrintable(path), strerror(errno));\n            return nullptr;\n        }}\n        fd = FileDescriptor(duplicatedFd);\n        qCInfo(KWIN_CORE, "Using external DRM lease fd directly for %s (lease=%s, fd=%d)",\n               qPrintable(path), leaseName.constData(), duplicatedFd);\n    }} else {{\n        fd = FileDescriptor(::open(path.toLocal8Bit(), O_RDWR | O_CLOEXEC));\n        if (!fd.isValid()) {{\n            qCWarning(KWIN_CORE, "Failed to open drm node %s: %s", qPrintable(path), strerror(errno));\n            return nullptr;\n        }}\n    }}'''
+        open_replacement = f'''std::unique_ptr<DrmDevice> DrmDevice::openWithAuthentication(const QString &path, int authenticatedFd)\n{{\n    // {DRMDEVICE_MARKER}\n    const QByteArray leaseName = qgetenv("KWIN_DRM_LEASE");\n    const QByteArray inheritedLeaseFdValue = qgetenv("KWIN_DRM_LEASE_FD");\n    const bool useExternalLease = (!leaseName.isEmpty() || !inheritedLeaseFdValue.isEmpty())\n        && authenticatedFd >= 0\n        && path.startsWith(QLatin1StringView("/dev/dri/card"));\n\n    FileDescriptor fd;\n    if (useExternalLease) {{\n        const int duplicatedFd = fcntl(authenticatedFd, F_DUPFD_CLOEXEC, 0);\n        if (duplicatedFd < 0) {{\n            qCWarning(KWIN_CORE, "Failed to duplicate external DRM lease fd for %s: %s",\n                      qPrintable(path), strerror(errno));\n            return nullptr;\n        }}\n        fd = FileDescriptor(duplicatedFd);\n        qCInfo(KWIN_CORE, "Using external DRM lease fd directly for %s (fd=%d)",\n               qPrintable(path), duplicatedFd);\n    }} else {{\n        fd = FileDescriptor(::open(path.toLocal8Bit(), O_RDWR | O_CLOEXEC));\n        if (!fd.isValid()) {{\n            qCWarning(KWIN_CORE, "Failed to open drm node %s: %s", qPrintable(path), strerror(errno));\n            return nullptr;\n        }}\n    }}'''
         device_text = replace_once(
             device_text,
             open_anchor,
@@ -106,7 +103,13 @@ def patch_tree(root: Path) -> None:
         drmdevice.write_text(device_text, encoding="utf-8")
 
     final = logind.read_text(encoding="utf-8")
-    required = [MARKER, "dlm_get_lease", "KWIN_DRM_LEASE", "s_multiSeatLeases"]
+    required = [
+        MARKER,
+        "dlm_get_lease",
+        "KWIN_DRM_LEASE",
+        "KWIN_DRM_LEASE_FD",
+        "s_multiSeatLeases",
+    ]
     missing = [needle for needle in required if needle not in final]
     if missing:
         raise RuntimeError("incomplete KWin DRM-lease patch: " + ", ".join(missing))
@@ -115,6 +118,7 @@ def patch_tree(root: Path) -> None:
     required_device = [
         DRMDEVICE_MARKER,
         "useExternalLease",
+        "KWIN_DRM_LEASE_FD",
         "F_DUPFD_CLOEXEC",
         "Using external DRM lease fd directly",
     ]
