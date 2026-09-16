@@ -21,14 +21,12 @@ def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(command, 127, "")
 
 
-def _import_matching_xwayland_environment(timeout: float = 5.0) -> None:
-    """Import DISPLAY/XAUTHORITY only from this seat's KWin environment.
+def _import_matching_xwayland_environment(timeout: float = 0.0) -> None:
+    """Import X11 values only when this seat's KWin has published them.
 
-    Never import WAYLAND_DISPLAY from the user manager: it may be stale from a
-    previous Labwc/Plasma session and was the reason one seat repeatedly tried
-    to connect to a non-existent Wayland socket. The KWin wrapper publishes its
-    activation environment; we only accept XWayland values after the published
-    WAYLAND_DISPLAY matches the explicit seat socket passed by the launcher.
+    Plasma itself must not wait for XWayland. A broken XWayland instance on one
+    seat previously delayed the desktop and made KDE processes try a dead
+    DISPLAY. Wayland is the primary session; X11 support is optional.
     """
     expected_wayland = os.environ.get("MSA_WAYLAND_DISPLAY") or os.environ.get(
         "WAYLAND_DISPLAY", ""
@@ -36,8 +34,8 @@ def _import_matching_xwayland_environment(timeout: float = 5.0) -> None:
     if not expected_wayland:
         return
 
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
         result = _run(["systemctl", "--user", "show-environment"])
         if result.returncode == 0:
             values: dict[str, str] = {}
@@ -53,6 +51,9 @@ def _import_matching_xwayland_environment(timeout: float = 5.0) -> None:
                     if values.get(key):
                         os.environ[key] = values[key]
                 return
+
+        if time.monotonic() >= deadline:
+            return
         time.sleep(0.2)
 
 
@@ -68,6 +69,8 @@ def _sync_activation_environment() -> None:
         "XDG_SESSION_TYPE",
         "XDG_SEAT",
         "XDG_DATA_DIRS",
+        "XDG_CONFIG_DIRS",
+        "XDG_MENU_PREFIX",
         "KDE_FULL_SESSION",
         "KDE_SESSION_VERSION",
     ]
@@ -78,21 +81,24 @@ def _sync_activation_environment() -> None:
         _run(["systemctl", "--user", "import-environment", *available])
 
 
+def _prepare_plasma_xdg_environment() -> None:
+    data_dirs = [part for part in os.environ.get("XDG_DATA_DIRS", "").split(":") if part]
+    for item in ("/usr/local/share", "/usr/share"):
+        if item not in data_dirs:
+            data_dirs.append(item)
+    os.environ["XDG_DATA_DIRS"] = ":".join(data_dirs)
+
+    config_dirs = [part for part in os.environ.get("XDG_CONFIG_DIRS", "").split(":") if part]
+    if "/etc/xdg" not in config_dirs:
+        config_dirs.append("/etc/xdg")
+    os.environ["XDG_CONFIG_DIRS"] = ":".join(config_dirs)
+
+    # Plasma ships plasma-applications.menu. Without the prefix KService can
+    # build a valid cache but Kickoff ends up with an empty application tree.
+    os.environ["XDG_MENU_PREFIX"] = "plasma-"
+
+
 def _refresh_application_database() -> None:
-    """Populate KDE's service cache for custom Plasma sessions.
-
-    startplasma normally prepares the XDG data paths and rebuilds KSycoca.
-    This project intentionally bypasses startplasma so it can keep the patched
-    per-seat KWin instance alive; do the relevant application-cache step here.
-    """
-    data_dirs = os.environ.get("XDG_DATA_DIRS", "").strip()
-    defaults = ["/usr/local/share", "/usr/share"]
-    current = [part for part in data_dirs.split(":") if part]
-    for item in defaults:
-        if item not in current:
-            current.append(item)
-    os.environ["XDG_DATA_DIRS"] = ":".join(current)
-
     for candidate in ("kbuildsycoca6", "kbuildsycoca5"):
         binary = shutil.which(candidate)
         if binary:
@@ -100,7 +106,15 @@ def _refresh_application_database() -> None:
             break
 
 
-def _start_first(candidates: list[str], args: list[str] | None = None) -> subprocess.Popen | None:
+def _start_first(
+    candidates: list[str],
+    args: list[str] | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.Popen | None:
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     for candidate in candidates:
         binary = shutil.which(candidate)
         if not binary and candidate.startswith("/") and Path(candidate).is_file():
@@ -108,7 +122,7 @@ def _start_first(candidates: list[str], args: list[str] | None = None) -> subpro
         if not binary:
             continue
         try:
-            return subprocess.Popen([binary, *(args or [])])
+            return subprocess.Popen([binary, *(args or [])], env=env)
         except OSError:
             continue
     return None
@@ -129,36 +143,44 @@ def main() -> int:
     os.environ["XDG_SESSION_TYPE"] = "wayland"
     os.environ["KDE_FULL_SESSION"] = "true"
     os.environ["KDE_SESSION_VERSION"] = "6"
-    os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
-    os.environ.setdefault("MOZ_ENABLE_WAYLAND", "1")
+    os.environ["MOZ_ENABLE_WAYLAND"] = "1"
+
+    # Core Plasma must always attach to the per-seat Wayland compositor even if
+    # XWayland for that seat is missing or crashing.
+    os.environ["QT_QPA_PLATFORM"] = "wayland"
 
     expected = os.environ.get("MSA_WAYLAND_DISPLAY")
     if expected:
-        # The launcher owns the source of truth. Do not let an old systemd-user
-        # environment silently redirect this seat to another compositor.
         os.environ["WAYLAND_DISPLAY"] = expected
 
     if not _wayland_socket_ready():
         return 3
 
+    _prepare_plasma_xdg_environment()
     _refresh_application_database()
-    _import_matching_xwayland_environment()
+
+    # Do not block desktop startup waiting for XWayland. If it is already
+    # available, publish DISPLAY for later-launched legacy applications.
+    _import_matching_xwayland_environment(timeout=0.0)
     _sync_activation_environment()
 
-    # These are the user-facing parts of a normal Plasma session. We avoid
-    # startplasma-wayland/plasma-session because they would launch a second,
-    # unpatched KWin instance and steal the seat.
     children: list[subprocess.Popen] = []
     for candidates, args in [
         (["kactivitymanagerd"], []),
         (["kded6"], []),
         (["ksmserver"], []),
         (["/usr/lib/polkit-kde-authentication-agent-1", "polkit-kde-authentication-agent-1"], []),
-        (["xembedsniproxy"], []),
         (["plasmashell"], ["--replace"]),
         (["krunner"], []),
     ]:
-        proc = _start_first(candidates, args)
+        proc = _start_first(candidates, args, extra_env={"QT_QPA_PLATFORM": "wayland"})
+        if proc is not None:
+            children.append(proc)
+
+    # xembedsniproxy only has a purpose when an X11 display exists. Starting it
+    # against a dead DISPLAY creates noise and can make the session look broken.
+    if os.environ.get("DISPLAY"):
+        proc = _start_first(["xembedsniproxy"], [], extra_env={"QT_QPA_PLATFORM": "xcb"})
         if proc is not None:
             children.append(proc)
 
