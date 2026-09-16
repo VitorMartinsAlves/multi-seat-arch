@@ -7,6 +7,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,15 +44,28 @@ def _run(command: list[str], timeout: float = 8.0) -> subprocess.CompletedProces
         return subprocess.CompletedProcess(command, 127, "")
 
 
-def discover_outputs() -> list[AudioOutput]:
-    pactl = shutil.which("pactl")
-    if not pactl:
-        return []
-    result = _run([pactl, "-f", "json", "list", "sinks"])
-    if result.returncode:
-        return []
+def _start_user_audio_stack() -> None:
+    """Best-effort activation of the normal PipeWire user stack.
+
+    Custom Plasma sessions do not start the complete plasma-workspace target, so
+    make sure the globally shipped user sockets/services are available before
+    declaring that no sinks exist. This is intentionally non-fatal: systems
+    using another Pulse-compatible server can still work through pactl.
+    """
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return
+    for unit in (
+        "pipewire.socket",
+        "pipewire-pulse.socket",
+        "wireplumber.service",
+    ):
+        _run([systemctl, "--user", "start", unit], timeout=4.0)
+
+
+def _parse_pactl_sinks(text: str) -> list[AudioOutput]:
     try:
-        raw = json.loads(result.stdout)
+        raw = json.loads(text)
     except json.JSONDecodeError:
         return []
 
@@ -69,7 +83,12 @@ def discover_outputs() -> list[AudioOutput]:
             or props.get("node.description")
             or name
         )
-        bus = str(props.get("device.bus") or props.get("device.api") or "")
+        bus = str(
+            props.get("device.bus")
+            or props.get("device.api")
+            or props.get("media.class")
+            or ""
+        )
         outputs.append(
             AudioOutput(
                 name=name,
@@ -80,6 +99,44 @@ def discover_outputs() -> list[AudioOutput]:
         )
     outputs.sort(key=lambda item: (item.description.lower(), item.name))
     return outputs
+
+
+def discover_outputs_diagnostic(*, activate_stack: bool = True) -> tuple[list[AudioOutput], str]:
+    pactl = shutil.which("pactl")
+    if not pactl:
+        return [], "pactl não encontrado. Reinstale o projeto para instalar libpulse."
+
+    result = _run([pactl, "-f", "json", "list", "sinks"])
+    if result.returncode and activate_stack:
+        _start_user_audio_stack()
+        # Give WirePlumber a short window to enumerate ALSA/HDMI/Bluetooth nodes.
+        for _ in range(6):
+            time.sleep(0.25)
+            result = _run([pactl, "-f", "json", "list", "sinks"])
+            if result.returncode == 0:
+                break
+
+    if result.returncode:
+        detail = result.stdout.strip().replace("\n", " ")
+        return [], detail or "Servidor de áudio não está disponível nesta sessão."
+
+    outputs = _parse_pactl_sinks(result.stdout)
+    if outputs:
+        return outputs, ""
+
+    # A valid server with zero sinks is materially different from a parser/
+    # connection failure and is useful diagnostic information in the GUI.
+    try:
+        raw = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return [], "O servidor respondeu, mas o JSON de áudio não pôde ser interpretado."
+    if isinstance(raw, list) and not raw:
+        return [], "PipeWire/Pulse está ativo, mas nenhuma saída de áudio foi publicada."
+    return [], "Nenhuma saída de áudio reconhecível foi encontrada."
+
+
+def discover_outputs() -> list[AudioOutput]:
+    return discover_outputs_diagnostic()[0]
 
 
 def load_rules() -> list[AudioRule]:
@@ -159,10 +216,15 @@ def test_output(output_name: str) -> tuple[bool, str]:
     wav = _test_wav()
     try:
         paplay = shutil.which("paplay")
-        if paplay:
-            result = _run([paplay, f"--device={output_name}", wav], timeout=5.0)
-            return result.returncode == 0, result.stdout.strip()
-        return False, "paplay não encontrado (instale pulseaudio-utils/pipewire-pulse)."
+        if not paplay:
+            return False, "paplay não encontrado. Reinstale o projeto para instalar libpulse."
+        result = _run([paplay, f"--device={output_name}", wav], timeout=5.0)
+        if result.returncode == 0:
+            return True, result.stdout.strip()
+        # The server may have been sleeping/stopped since GUI discovery.
+        _start_user_audio_stack()
+        result = _run([paplay, f"--device={output_name}", wav], timeout=5.0)
+        return result.returncode == 0, result.stdout.strip()
     finally:
         Path(wav).unlink(missing_ok=True)
 
@@ -172,7 +234,6 @@ def apply_for_current_seat() -> None:
     if not runtime_seat:
         return
 
-    # Import here to avoid backend/config side effects in the GUI discovery path.
     from . import config as cfg
     from .backend import runtime_seat_name
 
@@ -192,6 +253,5 @@ def apply_for_current_seat() -> None:
 
     pactl = shutil.which("pactl")
     if pactl:
-        # PipeWire-Pulse keeps the default per logged-in user/session, which is
-        # exactly what we want for dynamic users on a fixed physical seat.
+        _start_user_audio_stack()
         _run([pactl, "set-default-sink", rule.output])
