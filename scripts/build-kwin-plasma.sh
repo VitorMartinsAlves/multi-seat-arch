@@ -73,12 +73,10 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
 cmake --build "$BUILD" -j"$(nproc)"
 DESTDIR="$STAGE" cmake --install "$BUILD"
 
-for binary in kwin_wayland kwin_wayland_wrapper; do
-  [[ -x "$STAGE/usr/bin/$binary" ]] || {
-    echo "Falha: $binary não apareceu no staging." >&2
-    exit 6
-  }
-done
+[[ -x "$STAGE/usr/bin/kwin_wayland" ]] || {
+  echo "Falha: kwin_wayland não apareceu no staging." >&2
+  exit 6
+}
 
 sudo rm -rf "$PREFIX"
 sudo install -d "$PREFIX"
@@ -93,7 +91,10 @@ export LD_LIBRARY_PATH="$ROOT/lib:${LD_LIBRARY_PATH:-}"
 if [[ -d "$ROOT/lib/qt6/plugins" ]]; then
   export QT_PLUGIN_PATH="$ROOT/lib/qt6/plugins:${QT_PLUGIN_PATH:-}"
 fi
-exec "$ROOT/bin/kwin_wayland_wrapper" --xwayland "$@"
+# Direct exec is intentional: KWIN_DRM_LEASE_FD is an inherited capability.
+# Do not insert kwin_wayland_wrapper or another launcher between Atrium and
+# kwin_wayland, otherwise the lease fd/environment may be lost.
+exec "$ROOT/bin/kwin_wayland" --xwayland "$@"
 EOF
 sudo chmod 0755 /usr/local/bin/kwin-wayland-msa
 
@@ -103,7 +104,7 @@ printf '%s\n' "$kwin_ver" | sudo tee /usr/local/share/multi-seat-arch/kwin-plasm
 missing=$(env LD_LIBRARY_PATH="$PREFIX/usr/lib:${LD_LIBRARY_PATH:-}" ldd "$PREFIX/usr/bin/kwin_wayland" | grep 'not found' || true)
 if [[ -z "$missing" ]]; then
   echo "KWin experimental instalado em $PREFIX"
-  echo "Wrapper: /usr/local/bin/kwin-wayland-msa"
+  echo "Wrapper direto: /usr/local/bin/kwin-wayland-msa"
   echo "Versão: $kwin_ver"
   echo "Patch externo validado em LogindSession + DrmDevice."
 else
