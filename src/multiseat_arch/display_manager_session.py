@@ -42,8 +42,16 @@ def _lease_fd() -> int:
 
 
 def _runtime_dir() -> Path:
-    path = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    # All Atrium greeters run as the same atriumdm uid. Using the shared
+    # /run/user/<uid> makes the two KWin instances race for wayland-0 and can
+    # make one seat mistake the other seat's socket for its own. Give every
+    # physical seat an isolated runtime directory instead.
+    base = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    seat = os.environ.get("XDG_SEAT", "seat-unknown")
+    safe_seat = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in seat)
+    path = base / "multi-seat-arch" / safe_seat
     path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, 0o700)
     return path
 
 
@@ -127,6 +135,7 @@ def _start_kwin(*, greeter: bool) -> tuple[subprocess.Popen, dict[str, str]]:
             "KWIN_DRM_LEASE": connector,
             "KWIN_DRM_LEASE_FD": str(lease_fd),
             "KWIN_DRM_DEVICES": f"/dev/dri/{card}",
+            "XDG_RUNTIME_DIR": str(runtime),
             "XDG_SESSION_TYPE": "wayland",
             "QT_QPA_PLATFORM": "wayland",
             "MOZ_ENABLE_WAYLAND": "1",
@@ -140,6 +149,9 @@ def _start_kwin(*, greeter: bool) -> tuple[subprocess.Popen, dict[str, str]]:
     if greeter:
         args.extend(["--no-lockscreen", "--no-global-shortcuts"])
 
+    # pass_fds explicitly clears FD_CLOEXEC for the child. The KWin launcher is
+    # intentionally a direct exec of kwin_wayland so the inherited DRM lease
+    # capability cannot be lost in an intermediate wrapper process.
     proc = subprocess.Popen(args, env=env, pass_fds=(lease_fd,))
     display = _wait_new_socket(runtime, before, proc)
     client_env = env.copy()
