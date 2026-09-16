@@ -22,16 +22,28 @@ def _disarm(backend: ModuleType) -> None:
 
 def _arm(backend: ModuleType) -> None:
     _disarm(backend)
-    helper = backend._helper_binary()
     error_path = str(backend.LAST_ERROR)
     message = (
-        "Activation watchdog timeout: greeters were not confirmed within "
-        f"{WATCHDOG_SECONDS}s; restoring graphical.target automatically."
+        "Activation watchdog timeout: multiseat did not confirm greeters within "
+        f"{WATCHDOG_SECONDS}s; forced recovery executed."
     )
-    shell = (
-        f"mkdir -p {shlex.quote(str(backend.LAST_ERROR.parent))}; "
-        f"printf '%s\\n' {shlex.quote(message)} > {shlex.quote(error_path)}; "
-        f"exec {shlex.quote(helper)} _restore-now"
+
+    # Recovery intentionally does not call the project CLI. It must still work
+    # if Python/imports/the activation helper itself are the thing that failed.
+    # Stop every transient MSA component, return input devices to seat0, then
+    # restore the host graphical target/display manager.
+    shell = " ; ".join(
+        [
+            f"mkdir -p {shlex.quote(str(backend.LAST_ERROR.parent))}",
+            f"printf '%s\\n' {shlex.quote(message)} > {shlex.quote(error_path)}",
+            "systemctl stop 'msa-app-*' 'msa-seat-*' 'msa-input-*' 'msa-dlm-*' msa-hotplug.service 2>/dev/null || true",
+            f"rm -f {shlex.quote(str(backend.RUNTIME_UDEV_RULES))}",
+            "loginctl flush-devices 2>/dev/null || true",
+            "udevadm control --reload 2>/dev/null || true",
+            "udevadm trigger --subsystem-match=input --action=change 2>/dev/null || true",
+            "udevadm settle --timeout=5 2>/dev/null || true",
+            "systemctl isolate graphical.target",
+        ]
     )
     backend._run(
         [
@@ -50,26 +62,32 @@ def install(backend: ModuleType) -> None:
     if getattr(backend, "_msa_runtime_patch_v10_installed", False):
         return
 
+    previous_start = backend.start
     previous_activate = backend.activate_now
 
-    def activate(config) -> None:
-        # Arm an independent systemd timer before touching the current graphical
-        # session. It survives Python crashes, transient-unit failures and input
-        # reassignment, so a failed activation cannot strand the host on black
-        # screens indefinitely.
+    def start(config) -> None:
+        # This runs synchronously from the privileged CLI while the normal
+        # desktop still exists. Arm recovery BEFORE msa-activate.service is even
+        # scheduled, so a failure to start that service cannot strand the host.
         _arm(backend)
+        try:
+            previous_start(config)
+        except BaseException:
+            _disarm(backend)
+            raise
+
+    def activate(config) -> None:
         try:
             previous_activate(config)
         except BaseException:
-            # Keep the watchdog armed. The normal activation path should roll
-            # back immediately; if that rollback is interrupted, the timer is
-            # the final recovery path.
+            # Keep the timer armed. Inner rollback may recover immediately; if
+            # it does not, this independent timer is the final safety net.
             raise
         else:
-            # Every inner activation wrapper has returned. In dynamic-login
-            # mode this means Atrium is active and the expected greeters were
-            # observed, so automatic recovery is no longer needed.
+            # In dynamic-login mode all inner wrappers have returned only after
+            # the expected greeters were observed.
             _disarm(backend)
 
+    backend.start = start
     backend.activate_now = activate
     backend._msa_runtime_patch_v10_installed = True
