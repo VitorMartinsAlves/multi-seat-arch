@@ -30,13 +30,10 @@ class SessionShellTests(unittest.TestCase):
         self.assertIn("WAYLAND_DISPLAY", flattened)
         self.assertIn("DISPLAY", flattened)
 
-    def test_chromium_wayland_flag_is_idempotent(self):
-        with tempfile.TemporaryDirectory() as tmp, patch("multiseat_arch.session_shell.Path.home", return_value=Path(tmp)):
-            session_shell._ensure_chromium_wayland_flags()
-            session_shell._ensure_chromium_wayland_flags()
-            for name in ("chromium-flags.conf", "chrome-flags.conf"):
-                text = (Path(tmp) / ".config" / name).read_text()
-                self.assertEqual(text.count("--ozone-platform-hint=auto"), 1)
+    def test_session_shell_uses_app_compat_chromium_strategy(self):
+        source = Path(session_shell.__file__).read_text(encoding="utf-8")
+        self.assertIn("prefer_xwayland_for_chromium", source)
+        self.assertNotIn("_ensure_chromium_wayland_flags", source)
 
 
 if __name__ == "__main__":
