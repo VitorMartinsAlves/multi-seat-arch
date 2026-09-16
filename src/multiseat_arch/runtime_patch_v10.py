@@ -30,19 +30,23 @@ def _arm(backend: ModuleType) -> None:
 
     # Recovery intentionally does not call the project CLI. It must still work
     # if Python/imports/the activation helper itself are the thing that failed.
-    # Stop every transient MSA component, return input devices to seat0, then
-    # restore the host graphical target/display manager.
+    # Stop every transient MSA component, return inputs to seat0 and explicitly
+    # restart the host display manager. Merely isolating graphical.target is not
+    # enough when graphical.target remained active while display-manager.service
+    # was stopped during activation.
     shell = " ; ".join(
         [
             f"mkdir -p {shlex.quote(str(backend.LAST_ERROR.parent))}",
             f"printf '%s\\n' {shlex.quote(message)} > {shlex.quote(error_path)}",
-            "systemctl stop 'msa-app-*' 'msa-seat-*' 'msa-input-*' 'msa-dlm-*' msa-hotplug.service 2>/dev/null || true",
+            "systemctl stop msa-app-login-manager.service 'msa-app-*' 'msa-seat-*' 'msa-input-*' 'msa-dlm-*' msa-hotplug.service 2>/dev/null || true",
             f"rm -f {shlex.quote(str(backend.RUNTIME_UDEV_RULES))}",
             "loginctl flush-devices 2>/dev/null || true",
             "udevadm control --reload 2>/dev/null || true",
             "udevadm trigger --subsystem-match=input --action=change 2>/dev/null || true",
             "udevadm settle --timeout=5 2>/dev/null || true",
-            "systemctl isolate graphical.target",
+            "systemctl reset-failed display-manager.service 2>/dev/null || true",
+            "systemctl start graphical.target 2>/dev/null || true",
+            "systemctl restart display-manager.service 2>/dev/null || systemctl restart sddm.service 2>/dev/null || true",
         ]
     )
     backend._run(
