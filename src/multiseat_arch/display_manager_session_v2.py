@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from . import display_manager_session as base
@@ -69,6 +70,75 @@ def _start_kwin(*, greeter: bool) -> tuple[subprocess.Popen, dict[str, str]]:
     return proc, client_env
 
 
+def _proc_parent_map() -> dict[int, int]:
+    parents: dict[int, int] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            for line in (entry / "status").read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("PPid:"):
+                    parents[int(entry.name)] = int(line.split()[1])
+                    break
+        except (OSError, ValueError, IndexError):
+            continue
+    return parents
+
+
+def _is_descendant(pid: int, ancestor: int, parents: dict[int, int]) -> bool:
+    seen: set[int] = set()
+    current = pid
+    while current > 1 and current not in seen:
+        if current == ancestor:
+            return True
+        seen.add(current)
+        current = parents.get(current, 0)
+    return False
+
+
+def _xwayland_env_from_proc(kwin_pid: int, timeout: float = 8.0) -> dict[str, str]:
+    """Find the XWayland instance owned by this KWin and recover DISPLAY/auth.
+
+    KWin launches XWayland as a child/descendant. Environment changes made by a
+    child process cannot propagate back to this Python launcher, so relying on
+    systemd --user to magically contain DISPLAY is racy and often leaves Steam
+    and other X11 clients without a display. Reading the matching XWayland
+    command line is deterministic per seat and avoids mixing two seats' :N.
+    """
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
+        parents = _proc_parent_map()
+        for pid in sorted(parents):
+            if not _is_descendant(pid, kwin_pid, parents) or pid == kwin_pid:
+                continue
+            proc_dir = Path("/proc") / str(pid)
+            try:
+                raw = (proc_dir / "cmdline").read_bytes()
+            except OSError:
+                continue
+            argv = [part.decode(errors="ignore") for part in raw.split(b"\0") if part]
+            if not argv:
+                continue
+            exe = Path(argv[0]).name.lower()
+            if "xwayland" not in exe:
+                continue
+
+            display = next((arg for arg in argv[1:] if arg.startswith(":") and arg[1:].isdigit()), "")
+            if not display:
+                continue
+
+            result = {"DISPLAY": display}
+            if "-auth" in argv:
+                index = argv.index("-auth")
+                if index + 1 < len(argv) and argv[index + 1]:
+                    result["XAUTHORITY"] = argv[index + 1]
+            return result
+
+        if time.monotonic() >= deadline:
+            return {}
+        time.sleep(0.1)
+
+
 def _restore_user_runtime(env: dict[str, str]) -> None:
     """Keep the seat-specific Wayland socket while restoring the user's runtime.
 
@@ -131,6 +201,11 @@ def plasma_main() -> int:
         env.pop("KWIN_DRM_LEASE_FD", None)
         env.pop("KWIN_DRM_LEASE", None)
         env.pop("KWIN_DRM_DEVICES", None)
+
+        # Recover this seat's XWayland DISPLAY/XAUTHORITY directly from the
+        # XWayland process launched by this KWin. This is required because a
+        # child cannot export environment variables back to this launcher.
+        env.update(_xwayland_env_from_proc(kwin.pid, timeout=8.0))
 
         # Only KWin stays on the isolated per-seat runtime. Restore the normal
         # user runtime for Plasma so DBus, PipeWire and Pulse sockets resolve.
