@@ -140,21 +140,32 @@ def _start_user_service(unit: str) -> bool:
 
 
 def _start_polkit_agent(children: list[subprocess.Popen]) -> None:
-    """Start the packaged KDE PolicyKit agent with its proper user service.
-
-    Starting the executable as a loose child works for drawing a window, but it
-    does not reliably register the D-Bus activation name in our hand-built
-    Plasma session. pkexec then falls back to pkttyagent inside Alacritty, which
-    is exactly what CachyOS Hello exposes. The packaged user unit declares the
-    BusName and restart policy, so prefer it after importing this seat's
-    Wayland/session environment into the user manager.
-    """
+    """Start the packaged KDE PolicyKit agent with its proper user service."""
     if _start_user_service("plasma-polkit-agent.service"):
         return
 
-    # Fallback for installations where the service unit is unavailable.
     proc = _start_first(
         ["/usr/lib/polkit-kde-authentication-agent-1", "polkit-kde-authentication-agent-1"],
+        [],
+        extra_env={"QT_QPA_PLATFORM": "wayland"},
+    )
+    if proc is not None:
+        children.append(proc)
+
+
+def _start_powerdevil(children: list[subprocess.Popen]) -> None:
+    """Start Plasma's power-management daemon for the custom leased session.
+
+    A normal Plasma login starts this through the Plasma user-systemd target.
+    Our session intentionally does not start that target because it would also
+    try to launch the stock plasma-kwin_wayland.service and create a second KWin.
+    Start only PowerDevil here so the Energy KCM and related D-Bus APIs work.
+    """
+    if _start_user_service("plasma-powerdevil.service"):
+        return
+
+    proc = _start_first(
+        ["/usr/lib/org_kde_powerdevil", "org_kde_powerdevil"],
         [],
         extra_env={"QT_QPA_PLATFORM": "wayland"},
     )
@@ -179,8 +190,6 @@ def main() -> int:
     os.environ["KDE_SESSION_VERSION"] = "6"
     os.environ["MOZ_ENABLE_WAYLAND"] = "1"
 
-    # Core Plasma must always attach to the per-seat Wayland compositor even if
-    # XWayland for that seat is missing or crashing.
     os.environ["QT_QPA_PLATFORM"] = "wayland"
 
     expected = os.environ.get("MSA_WAYLAND_DISPLAY")
@@ -193,13 +202,12 @@ def main() -> int:
     _prepare_plasma_xdg_environment()
     _refresh_application_database()
 
-    # Do not block desktop startup waiting for XWayland. If it is already
-    # available, publish DISPLAY for later-launched legacy applications.
     _import_matching_xwayland_environment(timeout=0.0)
     _sync_activation_environment()
 
     children: list[subprocess.Popen] = []
     _start_polkit_agent(children)
+    _start_powerdevil(children)
 
     for candidates, args in [
         (["kactivitymanagerd"], []),
@@ -212,8 +220,6 @@ def main() -> int:
         if proc is not None:
             children.append(proc)
 
-    # xembedsniproxy only has a purpose when an X11 display exists. Starting it
-    # against a dead DISPLAY creates noise and can make the session look broken.
     if os.environ.get("DISPLAY"):
         proc = _start_first(["xembedsniproxy"], [], extra_env={"QT_QPA_PLATFORM": "xcb"})
         if proc is not None:
