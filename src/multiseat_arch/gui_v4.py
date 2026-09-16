@@ -3,15 +3,10 @@ from __future__ import annotations
 import getpass
 import json
 
-from PyQt6.QtWidgets import (
-    QComboBox,
-    QHBoxLayout,
-    QLabel,
-    QMessageBox,
-    QPushButton,
-)
+from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QMessageBox, QPushButton
 
 from . import config as cfg
+from .device_ui import is_system_device, is_useful_input
 from .gui import MODE_DISABLED, MODE_MIXED, MODE_SHARED, MODE_UNMANAGED
 from .gui_v3 import MainWindow as PreviousMainWindow
 from .model import Config, DeviceRule, Seat
@@ -41,7 +36,6 @@ class MainWindow(PreviousMainWindow):
 
     @staticmethod
     def _seat_suffix(index: int) -> str:
-        # 0 -> a, 25 -> z, then stable numeric names.
         return chr(ord("a") + index) if index < 26 else str(index + 1)
 
     @classmethod
@@ -59,8 +53,9 @@ class MainWindow(PreviousMainWindow):
     def _append_seat_panel(self, *, name: str | None = None, enabled: bool = False) -> dict:
         index = len(self.seat_panels)
         name = name or self._seat_name_for_index(index)
-        if self._panel_by_name(name):
-            return self._panel_by_name(name)  # type: ignore[return-value]
+        existing = self._panel_by_name(name)
+        if existing is not None:
+            return existing
         panel = self._seat_panel(self._seat_title_for_index(index), name)
         panel["enabled"].setChecked(enabled)
         self.seat_panels.append(panel)
@@ -74,7 +69,8 @@ class MainWindow(PreviousMainWindow):
 
     def add_seat(self, _checked=False) -> None:
         panel = self._append_seat_panel(enabled=True)
-        self._populate_one_panel(panel)
+        self._populate_one_panel(panel, preferred="")
+        self._assign_first_free_connector(panel)
         self._render_device_table()
         self._render_audio_table()
         self.status.setText(f"{panel['name']} adicionado. Escolha monitor e periféricos.")
@@ -122,61 +118,84 @@ class MainWindow(PreviousMainWindow):
             panel["enabled"].setChecked(seat.enabled)
             panel["saved_connector"] = seat.connector
 
-    def _populate_one_panel(self, panel: dict) -> None:
-        saved_connector = panel.pop("saved_connector", None)
-        current_connector = saved_connector or panel["monitor"].currentData()
+    def _populate_one_panel(self, panel: dict, *, preferred: str) -> None:
         panel["monitor"].clear()
         for display in self.displays:
             panel["monitor"].addItem(display.connector, display.connector)
-        if current_connector:
-            self._set_combo_data(panel["monitor"], current_connector)
+        panel["monitor"].setCurrentIndex(-1)
+        if preferred:
+            self._set_combo_data(panel["monitor"], preferred)
+            if panel["monitor"].currentData() != preferred:
+                # Keep a disconnected saved connector visible so validation can
+                # report it instead of silently switching to another monitor.
+                panel["monitor"].addItem(f"{preferred} (desconectado)", preferred)
+                self._set_combo_data(panel["monitor"], preferred)
+
+    def _assign_first_free_connector(self, panel: dict) -> None:
+        used = {
+            str(other["monitor"].currentData())
+            for other in self.seat_panels
+            if other is not panel and other["monitor"].currentData()
+        }
+        for display in self.displays:
+            if display.connector not in used:
+                self._set_combo_data(panel["monitor"], display.connector)
+                return
 
     def _populate_seat_selectors(self) -> None:
         self._ensure_panel_count(max(2, len(self.displays)))
-        wanted: dict[str, str] = {}
-        for panel in self.seat_panels:
-            saved = panel.get("saved_connector") or panel["monitor"].currentData()
-            if saved:
-                wanted[panel["name"]] = str(saved)
-            self._populate_one_panel(panel)
+        preferred = {
+            panel["name"]: str(panel.pop("saved_connector", None) or panel["monitor"].currentData() or "")
+            for panel in self.seat_panels
+        }
+        assigned: set[str] = set()
+        unassigned: list[dict] = []
 
-        used: set[str] = set()
         for panel in self.seat_panels:
-            connector = wanted.get(panel["name"], "")
-            if connector and connector not in used:
-                self._set_combo_data(panel["monitor"], connector)
-                if panel["monitor"].currentData() == connector:
-                    used.add(connector)
+            wanted = preferred.get(panel["name"], "")
+            self._populate_one_panel(panel, preferred="")
+            connected = any(d.connector == wanted for d in self.displays)
+            if wanted and connected and wanted not in assigned:
+                self._set_combo_data(panel["monitor"], wanted)
+                assigned.add(wanted)
+            elif wanted and not connected:
+                self._populate_one_panel(panel, preferred=wanted)
+                # A disconnected connector is intentionally not considered free.
+                assigned.add(wanted)
+            else:
+                unassigned.append(panel)
 
-        available = [d.connector for d in self.displays if d.connector not in used]
-        for panel in self.seat_panels:
-            current = panel["monitor"].currentData()
-            if current in used:
-                continue
+        available = [d.connector for d in self.displays if d.connector not in assigned]
+        for panel in unassigned:
             if available:
                 connector = available.pop(0)
                 self._set_combo_data(panel["monitor"], connector)
-                used.add(connector)
+                assigned.add(connector)
+            else:
+                panel["monitor"].setCurrentIndex(-1)
 
     def build_config(self) -> Config:
         legacy_user = getpass.getuser()
-        seats = [
-            Seat(
-                name=panel["name"],
-                connector=panel["monitor"].currentData() or "",
-                user=legacy_user,
-                enabled=panel["enabled"].isChecked(),
-            )
-            for panel in self.seat_panels
-        ]
-        return Config(version=2, seats=seats, devices=list(self.rules.values()))
+        return Config(
+            version=2,
+            seats=[
+                Seat(
+                    name=panel["name"],
+                    connector=panel["monitor"].currentData() or "",
+                    user=legacy_user,
+                    enabled=panel["enabled"].isChecked(),
+                )
+                for panel in self.seat_panels
+            ],
+            devices=list(self.rules.values()),
+        )
 
     def _make_destination_combo(self, keys: list[str], current: str) -> QComboBox:
         combo = QComboBox()
         if current == MODE_MIXED:
             combo.addItem("Misto (várias regras)", MODE_MIXED)
-        for panel in self.seat_panels:
-            label = self._seat_title_for_index(self.seat_panels.index(panel))
+        for index, panel in enumerate(self.seat_panels):
+            label = self._seat_title_for_index(index)
             if not panel["enabled"].isChecked():
                 label += " (desativado)"
             combo.addItem(label, panel["name"])
@@ -245,9 +264,11 @@ class MainWindow(PreviousMainWindow):
             (p for p in self.seat_panels if "eDP" in str(p["monitor"].currentData() or "")),
             None,
         )
-        external_panel = next((p for p in self.seat_panels if p is not internal_panel and p["enabled"].isChecked()), None)
+        external_panel = next(
+            (p for p in self.seat_panels if p is not internal_panel and p["enabled"].isChecked()),
+            None,
+        )
         for device in self.inputs:
-            from .device_ui import is_system_device, is_useful_input
             if not is_useful_input(device) or is_system_device(device):
                 self.rules[device.key] = DeviceRule(key=device.key, mode=MODE_UNMANAGED, name=device.name)
                 continue
