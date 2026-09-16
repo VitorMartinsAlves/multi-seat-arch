@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "multi-seat-arch"
-version = "0.8.0.dev9"
+version = "0.8.0.dev10"
 description = "ASTER-like visual single-GPU multiseat manager for Arch Linux/CachyOS"
 requires-python = ">=3.11"
 dependencies = []
@@ -15,12 +15,13 @@ input-proxy = ["evdev>=1.7"]
 
 [project.scripts]
 multi-seat-arch = "multiseat_arch.cli:main"
-multi-seat-arch-gui = "multiseat_arch.gui:main"
+multi-seat-arch-gui = "multiseat_arch.gui_v2:main"
 multi-seat-arch-input-proxy = "multiseat_arch.input_proxy:main"
 multi-seat-arch-session = "multiseat_arch.session_shell:main"
 multi-seat-arch-plasma-session = "multiseat_arch.plasma_session:main"
 multi-seat-arch-login-greeter = "multiseat_arch.display_manager_session:greeter_main"
 multi-seat-arch-login-plasma = "multiseat_arch.display_manager_session:plasma_main"
+multi-seat-arch-audio-session = "multiseat_arch.audio:apply_for_current_seat"
 
 [tool.setuptools.packages.find]
 where = ["src"]
