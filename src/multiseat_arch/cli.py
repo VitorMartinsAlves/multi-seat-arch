@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import backend
 from . import config as cfg
+from . import dynamic_login
 from .runtime_patch import install as install_runtime_patch
 
 install_runtime_patch(backend)
@@ -47,6 +48,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status")
     sub.add_parser("plasma-enable", help="ativa o backend KWin/Plasma experimental")
     sub.add_parser("plasma-disable", help="volta ao backend Labwc estável")
+    sub.add_parser("login-enable", help="ativa greeter por tela e login de qualquer usuário local")
+    sub.add_parser("login-disable", help="desativa o greeter e volta ao usuário fixo por seat")
+    sub.add_parser("login-status", help="mostra se o login dinâmico está ativo")
 
     validate_parser = sub.add_parser("validate")
     validate_parser.add_argument("config")
@@ -172,8 +176,29 @@ def main() -> int:
             return 0
 
         if args.cmd == "plasma-disable":
+            if dynamic_login.enabled():
+                raise RuntimeError("Desative primeiro o login dinâmico com: multi-seat-arch login-disable")
             _set_compositor(LABWC_STABLE)
             print("Backend Labwc estável restaurado na configuração.")
+            return 0
+
+        if args.cmd == "login-enable":
+            if not Path(PLASMA_EXPERIMENTAL).is_file():
+                raise RuntimeError(
+                    "KWin experimental não está instalado. Rode scripts/build-kwin-plasma.sh primeiro."
+                )
+            _set_compositor(PLASMA_EXPERIMENTAL)
+            dynamic_login.enable()
+            print("Login dinâmico ativado: cada tela terá greeter próprio e usuário não fixo.")
+            return 0
+
+        if args.cmd == "login-disable":
+            dynamic_login.disable()
+            print("Login dinâmico desativado; o modo Plasma volta a usar o usuário fixo configurado por seat.")
+            return 0
+
+        if args.cmd == "login-status":
+            print("ativo" if dynamic_login.enabled() else "desativado")
             return 0
 
         if args.cmd == "create-user":
