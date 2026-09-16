@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import pwd
 import shutil
+import socket
 import time
+from pathlib import Path
 from types import ModuleType
 
 from .dynamic_login import enabled as dynamic_login_enabled
 
 LOGIN_MANAGER_UNIT = "msa-app-login-manager"
 LOGIN_MANAGER_SERVICE = LOGIN_MANAGER_UNIT + ".service"
+GREETER_STABLE_SECONDS = 3.0
 
 
 def _logind_seats(backend: ModuleType) -> set[str]:
@@ -24,13 +28,7 @@ def _logind_seats(backend: ModuleType) -> set[str]:
 
 
 def _wait_for_logind_seats(backend: ModuleType, config, timeout: float = 8.0) -> None:
-    """Wait until logind publishes every synthetic hardware seat.
-
-    udev ID_SEAT being correct is not enough for Atrium: the login manager
-    consumes logind seats. Refuse to start Atrium unless those seats actually
-    exist, otherwise both physical displays can be leased while no greeter is
-    able to claim them.
-    """
+    """Wait until logind publishes every synthetic hardware seat."""
     expected = {
         backend.runtime_seat_name(seat)
         for seat in backend.active_seats(config)
@@ -66,19 +64,61 @@ def _wait_for_logind_seats(backend: ModuleType, config, timeout: float = 8.0) ->
     raise RuntimeError(message)
 
 
-def _wait_for_greeters(backend: ModuleType, config, timeout: float = 15.0) -> None:
-    """Refuse to leave the machine on leased black screens without a greeter."""
-    expected = max(1, len(backend.active_seats(config)))
+def _runtime_dir_for_seat(runtime_seat: str) -> Path:
+    account = pwd.getpwnam("atriumdm")
+    safe_seat = "".join(
+        ch if ch.isalnum() or ch in "-_." else "_"
+        for ch in runtime_seat
+    )
+    return Path(f"/run/user/{account.pw_uid}/multi-seat-arch/{safe_seat}")
+
+
+def _socket_connectable(path: Path) -> bool:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(0.2)
+    try:
+        client.connect(str(path))
+        return True
+    except OSError:
+        return False
+    finally:
+        client.close()
+
+
+def _seat_has_wayland(runtime_seat: str) -> bool:
+    runtime = _runtime_dir_for_seat(runtime_seat)
+    if not runtime.is_dir():
+        return False
+    for path in sorted(runtime.glob("wayland-*")):
+        if path.name.endswith(".lock"):
+            continue
+        try:
+            if path.is_socket() and _socket_connectable(path):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _wait_for_greeters(backend: ModuleType, config, timeout: float = 25.0) -> None:
+    """Require a stable, independently connectable Wayland compositor per seat."""
+    runtime_seats = [
+        backend.runtime_seat_name(seat)
+        for seat in backend.active_seats(config)
+    ]
+    expected = max(1, len(runtime_seats))
     deadline = time.monotonic() + timeout
+    stable_since: float | None = None
 
     while time.monotonic() < deadline:
         if backend._unit_failed(LOGIN_MANAGER_SERVICE):
-            log = backend._unit_log_tail(LOGIN_MANAGER_SERVICE, lines=120)
+            log = backend._unit_log_tail(LOGIN_MANAGER_SERVICE, lines=160)
             raise RuntimeError(
                 "Atrium encerrou antes de abrir as telas de login."
                 + (f"\n{log}" if log else "")
             )
 
+        healthy = False
         if backend._unit_active(LOGIN_MANAGER_SERVICE):
             processes = backend._run(
                 [
@@ -89,14 +129,27 @@ def _wait_for_greeters(backend: ModuleType, config, timeout: float = 15.0) -> No
                 check=False,
             )
             greeters = [line for line in processes.stdout.splitlines() if line.strip()]
-            if len(greeters) >= expected:
+            sockets_ready = all(_seat_has_wayland(seat) for seat in runtime_seats)
+            healthy = len(greeters) >= expected and sockets_ready
+
+        if healthy:
+            if stable_since is None:
+                stable_since = time.monotonic()
+            elif time.monotonic() - stable_since >= GREETER_STABLE_SECONDS:
                 return
+        else:
+            stable_since = None
 
         time.sleep(0.2)
 
-    log = backend._unit_log_tail(LOGIN_MANAGER_SERVICE, lines=160)
+    log = backend._unit_log_tail(LOGIN_MANAGER_SERVICE, lines=220)
+    states = ", ".join(
+        f"{seat}={'wayland-ok' if _seat_has_wayland(seat) else 'sem-wayland'}"
+        for seat in runtime_seats
+    )
     raise RuntimeError(
-        f"Atrium ficou ativo, mas não abriu os {expected} greeter(s) esperados em {timeout:.0f}s."
+        f"Atrium não estabilizou os {expected} greeter(s) em {timeout:.0f}s. "
+        f"Estado: {states}."
         + (f"\n{log}" if log else "")
     )
 
@@ -119,8 +172,6 @@ def install(backend: ModuleType) -> None:
                 "Rode scripts/build-atrium-login-manager.sh."
             )
 
-        # Reuse the activation path for DRM leases, synthetic logind seats and
-        # input routing, but suppress the legacy fixed-user compositor launch.
         original_start_seat = backend._start_seat
 
         def skip_fixed_user_seat(_config, _seat) -> None:
@@ -133,9 +184,6 @@ def install(backend: ModuleType) -> None:
             backend._start_seat = original_start_seat
 
         try:
-            # Atrium discovers stations through logind, not by reading the udev
-            # rule directly. Verify that both synthetic seats really exist
-            # before allowing the login manager to take over the leased screens.
             _wait_for_logind_seats(backend, config)
 
             backend._systemd_run(
@@ -151,9 +199,6 @@ def install(backend: ModuleType) -> None:
             )
             _wait_for_greeters(backend, config)
         except Exception as exc:
-            # A running DRM lease with no greeter produces a permanent black
-            # screen. Treat that as activation failure and immediately return
-            # the machine to its normal graphical target.
             backend._persist_activation_error(exc)
             backend._run(["systemctl", "stop", LOGIN_MANAGER_SERVICE], check=False)
             backend._rollback_after_failed_start()
