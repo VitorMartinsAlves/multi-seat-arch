@@ -7,6 +7,10 @@ from pathlib import Path
 MODE_FILE = Path("/etc/multi-seat-arch/dynamic-login")
 ATRIUM_CONFIG = Path("/etc/atrium.conf")
 ATRIUM_BINARY = Path("/usr/bin/atrium")
+ATRIUM_GREETER_CANDIDATES = (
+    Path("/usr/lib/atrium/atrium-gtk-greeter"),
+    Path("/usr/local/lib/atrium/atrium-gtk-greeter"),
+)
 
 
 def enabled() -> bool:
@@ -24,14 +28,18 @@ def _write_atomic(path: Path, text: str, mode: int = 0o644) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def _canonical(path: str | Path) -> str:
+    return str(Path(path).resolve(strict=True))
+
+
 def _resolve_wrapper(name: str) -> str:
     found = shutil.which(name)
     if found and Path(found).is_file():
-        return found
+        return _canonical(found)
 
     for candidate in (Path("/usr/bin") / name, Path("/usr/local/bin") / name):
         if candidate.is_file():
-            return str(candidate)
+            return _canonical(candidate)
 
     raise RuntimeError(
         f"Wrapper de login ausente: {name}. Reinstale o projeto com: "
@@ -39,16 +47,37 @@ def _resolve_wrapper(name: str) -> str:
     )
 
 
-def enable() -> None:
-    if os.geteuid() != 0:
-        raise PermissionError("Execute como root.")
+def _resolve_atrium_greeter() -> str:
+    for candidate in ATRIUM_GREETER_CANDIDATES:
+        if candidate.is_file():
+            return _canonical(candidate)
+    raise RuntimeError(
+        "Greeter gráfico do Atrium ausente (atrium-gtk-greeter). "
+        "Rode: bash scripts/build-atrium-login-manager.sh"
+    )
+
+
+def prerequisites() -> dict[str, str]:
+    """Return canonical paths required by the dynamic-login backend."""
     if not ATRIUM_BINARY.is_file():
         raise RuntimeError(
             "Atrium multiseat não está instalado. Rode scripts/build-atrium-login-manager.sh primeiro."
         )
+    return {
+        "atrium": _canonical(ATRIUM_BINARY),
+        "atrium_greeter": _resolve_atrium_greeter(),
+        "greeter_wrapper": _resolve_wrapper("multi-seat-arch-login-greeter"),
+        "plasma_wrapper": _resolve_wrapper("multi-seat-arch-login-plasma"),
+    }
 
-    greeter_wrapper = _resolve_wrapper("multi-seat-arch-login-greeter")
-    plasma_wrapper = _resolve_wrapper("multi-seat-arch-login-plasma")
+
+def enable() -> None:
+    if os.geteuid() != 0:
+        raise PermissionError("Execute como root.")
+
+    paths = prerequisites()
+    greeter_wrapper = paths["greeter_wrapper"]
+    plasma_wrapper = paths["plasma_wrapper"]
 
     # Atrium owns only the synthetic display seats created by Multi Seat Arch.
     # seat0 remains reserved for the normal desktop/display manager used by restore.
