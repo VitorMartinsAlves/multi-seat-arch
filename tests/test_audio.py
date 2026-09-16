@@ -58,7 +58,7 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(outputs[0].state, "RUNNING")
         self.assertEqual(outputs[0].bus, "pci")
 
-    def test_load_rules_accepts_only_known_seats(self):
+    def test_load_rules_accepts_dynamic_seats_and_rejects_invalid_destinations(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "audio.json"
             path.write_text(
@@ -66,7 +66,8 @@ class AudioTests(unittest.TestCase):
                     {
                         "outputs": [
                             {"output": "speaker", "seat": "seat-a"},
-                            {"output": "bad", "seat": "seat-z"},
+                            {"output": "third", "seat": "seat-z"},
+                            {"output": "bad", "seat": "../seat-z"},
                         ]
                     }
                 ),
@@ -74,7 +75,10 @@ class AudioTests(unittest.TestCase):
             )
             with patch("multiseat_arch.audio.AUDIO_CONFIG", path):
                 rules = audio.load_rules()
-        self.assertEqual([(r.output, r.seat) for r in rules], [("speaker", "seat-a")])
+        self.assertEqual(
+            [(r.output, r.seat) for r in rules],
+            [("speaker", "seat-a"), ("third", "seat-z")],
+        )
 
 
 if __name__ == "__main__":
