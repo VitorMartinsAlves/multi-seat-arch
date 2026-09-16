@@ -58,11 +58,25 @@ if (( engine_needs_build )); then
   sudo bash scripts/build-engine.sh
 fi
 
-# Existing KWin builds do not need a full rebuild for the launcher fix. The
-# patched binary already lives under /opt; replace only the launcher so the DRM
-# lease fd inherited from Atrium reaches kwin_wayland without an intermediate
-# kwin_wayland_wrapper process.
-if [[ -x /opt/multi-seat-arch/kwin-plasma/usr/bin/kwin_wayland ]]; then
+# KWin's own wrapper creates the XWayland display sockets/Xauthority and
+# publishes DISPLAY. fd 198 is explicitly inheritable before this launcher is
+# exec'd, so it remains available to the patched kwin_wayland child.
+KWIN_ROOT=/opt/multi-seat-arch/kwin-plasma/usr
+if [[ -x "$KWIN_ROOT/bin/kwin_wayland_wrapper" ]]; then
+  sudo tee /usr/local/bin/kwin-wayland-msa >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -e
+ROOT=/opt/multi-seat-arch/kwin-plasma/usr
+export PATH="$ROOT/bin:$PATH"
+export LD_LIBRARY_PATH="$ROOT/lib:${LD_LIBRARY_PATH:-}"
+if [[ -d "$ROOT/lib/qt6/plugins" ]]; then
+  export QT_PLUGIN_PATH="$ROOT/lib/qt6/plugins:${QT_PLUGIN_PATH:-}"
+fi
+exec "$ROOT/bin/kwin_wayland_wrapper" --xwayland "$@"
+EOF
+  sudo chmod 0755 /usr/local/bin/kwin-wayland-msa
+elif [[ -x "$KWIN_ROOT/bin/kwin_wayland" ]]; then
+  echo "Aviso: kwin_wayland_wrapper não está no build experimental; X11/Steam pode não funcionar." >&2
   sudo tee /usr/local/bin/kwin-wayland-msa >/dev/null <<'EOF'
 #!/usr/bin/env bash
 set -e
