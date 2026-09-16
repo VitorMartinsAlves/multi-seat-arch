@@ -58,6 +58,25 @@ if (( engine_needs_build )); then
   sudo bash scripts/build-engine.sh
 fi
 
+# Existing KWin builds do not need a full rebuild for the launcher fix. The
+# patched binary already lives under /opt; replace only the launcher so the DRM
+# lease fd inherited from Atrium reaches kwin_wayland without an intermediate
+# kwin_wayland_wrapper process.
+if [[ -x /opt/multi-seat-arch/kwin-plasma/usr/bin/kwin_wayland ]]; then
+  sudo tee /usr/local/bin/kwin-wayland-msa >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -e
+ROOT=/opt/multi-seat-arch/kwin-plasma/usr
+export PATH="$ROOT/bin:$PATH"
+export LD_LIBRARY_PATH="$ROOT/lib:${LD_LIBRARY_PATH:-}"
+if [[ -d "$ROOT/lib/qt6/plugins" ]]; then
+  export QT_PLUGIN_PATH="$ROOT/lib/qt6/plugins:${QT_PLUGIN_PATH:-}"
+fi
+exec "$ROOT/bin/kwin_wayland" --xwayland "$@"
+EOF
+  sudo chmod 0755 /usr/local/bin/kwin-wayland-msa
+fi
+
 sudo python -m pip install --break-system-packages --disable-pip-version-check .
 
 sudo install -Dm644 desktop/multi-seat-arch.desktop /usr/share/applications/multi-seat-arch.desktop
