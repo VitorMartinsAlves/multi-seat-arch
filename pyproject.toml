@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "multi-seat-arch"
-version = "0.8.0.dev12"
+version = "0.8.0.dev13"
 description = "ASTER-like visual single-GPU multiseat manager for Arch Linux/CachyOS"
 requires-python = ">=3.11"
 dependencies = []
