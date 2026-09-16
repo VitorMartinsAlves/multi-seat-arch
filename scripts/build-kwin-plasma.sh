@@ -25,16 +25,11 @@ tag="v${kwin_ver}"
 echo "KWin instalado: $pkgver"
 echo "Fonte experimental: KDE/kwin $tag"
 
-# Use the Arch KWin make dependencies instead of fixing missing headers one by
-# one. The installed kwin package already pulls the runtime libraries; these
-# are the extra build-time pieces required by upstream KWin on Arch/CachyOS.
 sudo pacman -S --needed --noconfirm \
   git base-devel cmake ninja extra-cmake-modules pkgconf python \
   kdoctools krunner plasma-wayland-protocols vulkan-headers \
   wayland-protocols xorg-xwayland plasma-workspace
 
-# Fail early with a useful message if the package transaction above somehow
-# did not provide the Vulkan SDK headers expected by KWin's CMake checks.
 if [[ ! -f /usr/include/vulkan/vulkan.h ]]; then
   echo "Falha: headers Vulkan ausentes mesmo após instalar vulkan-headers." >&2
   echo "Verifique o pacote com: pacman -Ql vulkan-headers" >&2
@@ -60,7 +55,11 @@ fi
 python "$REPO_DIR/scripts/patch-kwin-drm-lease.py" "$SRC"
 
 grep -q 'MULTI_SEAT_ARCH_DRM_LEASE' "$SRC/src/core/session_logind.cpp" || {
-  echo "Falha: patch KWin não foi aplicado." >&2
+  echo "Falha: patch de lease no LogindSession não foi aplicado." >&2
+  exit 5
+}
+grep -q 'MULTI_SEAT_ARCH_DRMDEVICE_LEASE_FD' "$SRC/src/core/drmdevice.cpp" || {
+  echo "Falha: patch de lease no DrmDevice não foi aplicado." >&2
   exit 5
 }
 
@@ -94,9 +93,6 @@ export LD_LIBRARY_PATH="$ROOT/lib:${LD_LIBRARY_PATH:-}"
 if [[ -d "$ROOT/lib/qt6/plugins" ]]; then
   export QT_PLUGIN_PATH="$ROOT/lib/qt6/plugins:${QT_PLUGIN_PATH:-}"
 fi
-# The wrapper owns the Wayland and XWayland listening sockets, exports
-# WAYLAND_DISPLAY/DISPLAY into the user's activation environment, then starts
-# the patched kwin_wayland found first in PATH.
 exec "$ROOT/bin/kwin_wayland_wrapper" --xwayland "$@"
 EOF
 sudo chmod 0755 /usr/local/bin/kwin-wayland-msa
@@ -109,6 +105,7 @@ if [[ -z "$missing" ]]; then
   echo "KWin experimental instalado em $PREFIX"
   echo "Wrapper: /usr/local/bin/kwin-wayland-msa"
   echo "Versão: $kwin_ver"
+  echo "Patch externo validado em LogindSession + DrmDevice."
 else
   echo "Falha: bibliotecas ausentes no KWin experimental:" >&2
   echo "$missing" >&2
