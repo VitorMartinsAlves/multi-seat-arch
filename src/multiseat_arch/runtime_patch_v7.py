@@ -10,6 +10,62 @@ LOGIN_MANAGER_UNIT = "msa-app-login-manager"
 LOGIN_MANAGER_SERVICE = LOGIN_MANAGER_UNIT + ".service"
 
 
+def _logind_seats(backend: ModuleType) -> set[str]:
+    result = backend._run(
+        ["loginctl", "list-seats", "--no-legend", "--no-pager"],
+        check=False,
+    )
+    seats: set[str] = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if fields:
+            seats.add(fields[0])
+    return seats
+
+
+def _wait_for_logind_seats(backend: ModuleType, config, timeout: float = 8.0) -> None:
+    """Wait until logind publishes every synthetic hardware seat.
+
+    udev ID_SEAT being correct is not enough for Atrium: the login manager
+    consumes logind seats. Refuse to start Atrium unless those seats actually
+    exist, otherwise both physical displays can be leased while no greeter is
+    able to claim them.
+    """
+    expected = {
+        backend.runtime_seat_name(seat)
+        for seat in backend.active_seats(config)
+    }
+    deadline = time.monotonic() + timeout
+    current: set[str] = set()
+
+    while time.monotonic() < deadline:
+        current = _logind_seats(backend)
+        if expected.issubset(current):
+            return
+        time.sleep(0.2)
+
+    missing = sorted(expected - current)
+    details: list[str] = []
+    for seat in missing:
+        status = backend._run(
+            ["loginctl", "seat-status", seat],
+            check=False,
+        )
+        text = status.stdout.strip()
+        if text:
+            details.append(f"{seat}: {text}")
+
+    message = (
+        "logind não publicou todos os seats do multiseat. "
+        f"Esperados: {', '.join(sorted(expected))}. "
+        f"Detectados: {', '.join(sorted(current)) or '<nenhum>'}. "
+        f"Ausentes: {', '.join(missing) or '<nenhum>'}."
+    )
+    if details:
+        message += "\n" + "\n".join(details)
+    raise RuntimeError(message)
+
+
 def _wait_for_greeters(backend: ModuleType, config, timeout: float = 15.0) -> None:
     """Refuse to leave the machine on leased black screens without a greeter."""
     expected = max(1, len(backend.active_seats(config)))
@@ -77,6 +133,11 @@ def install(backend: ModuleType) -> None:
             backend._start_seat = original_start_seat
 
         try:
+            # Atrium discovers stations through logind, not by reading the udev
+            # rule directly. Verify that both synthetic seats really exist
+            # before allowing the login manager to take over the leased screens.
+            _wait_for_logind_seats(backend, config)
+
             backend._systemd_run(
                 LOGIN_MANAGER_UNIT,
                 [atrium],
