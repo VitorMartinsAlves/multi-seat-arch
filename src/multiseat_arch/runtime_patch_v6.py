@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import grp
 import pwd
 import shutil
 import socket
@@ -109,6 +110,25 @@ def _wait_for_new_wayland_socket(
     )
 
 
+def _graphics_supplementary_groups() -> list[str]:
+    """Return GPU groups that exist on the host.
+
+    Our synthetic seats do not get the normal seat0 logind ACL for renderD*.
+    KWin itself can use the DRM lease, but its XWayland child still opens the
+    render node for glamor/DRI3. Give the transient compositor service the same
+    effective access through supplementary groups, without changing user/group
+    membership or persistent device permissions.
+    """
+    groups: list[str] = []
+    for name in ("render", "video"):
+        try:
+            grp.getgrnam(name)
+        except KeyError:
+            continue
+        groups.append(name)
+    return groups
+
+
 def install(backend: ModuleType) -> None:
     if getattr(backend, "_msa_runtime_patch_v6_installed", False):
         return
@@ -161,12 +181,17 @@ def install(backend: ModuleType) -> None:
         }
 
         unit = f"msa-seat-{seat.name}"
+        properties = _seat_service_properties()
+        graphics_groups = _graphics_supplementary_groups()
+        if graphics_groups:
+            properties.append("SupplementaryGroups=" + " ".join(graphics_groups))
+
         backend._systemd_run(
             unit,
             [compositor, "--no-lockscreen"],
             uid=uid,
             env=env,
-            properties=_seat_service_properties(),
+            properties=properties,
         )
 
         # kwin_wayland_wrapper must choose the socket itself because it creates
