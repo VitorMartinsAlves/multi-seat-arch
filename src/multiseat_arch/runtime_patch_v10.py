@@ -31,15 +31,16 @@ def _arm(backend: ModuleType) -> None:
     audio_rules = getattr(
         backend,
         "RUNTIME_AUDIO_UDEV_RULES",
-        "/run/udev/rules.d/74-multi-seat-arch-runtime-audio.rules",
+        "/run/udev/rules.d/99-multi-seat-arch-runtime-audio.rules",
     )
+    legacy_audio_rules = "/run/udev/rules.d/74-multi-seat-arch-runtime-audio.rules"
 
     shell = " ; ".join(
         [
             f"mkdir -p {shlex.quote(str(backend.LAST_ERROR.parent))}",
             f"printf '%s\\n' {shlex.quote(message)} > {shlex.quote(error_path)}",
             "systemctl stop msa-app-login-manager.service 'msa-app-*' 'msa-seat-*' 'msa-input-*' 'msa-dlm-*' msa-hotplug.service 2>/dev/null || true",
-            f"rm -f {shlex.quote(str(backend.RUNTIME_UDEV_RULES))} {shlex.quote(str(audio_rules))}",
+            f"rm -f {shlex.quote(str(backend.RUNTIME_UDEV_RULES))} {shlex.quote(str(audio_rules))} {shlex.quote(legacy_audio_rules)}",
             "loginctl flush-devices 2>/dev/null || true",
             "udevadm control --reload 2>/dev/null || true",
             "udevadm trigger --subsystem-match=input --action=change 2>/dev/null || true",
