@@ -73,6 +73,7 @@ def _sync_activation_environment() -> None:
         "XDG_MENU_PREFIX",
         "KDE_FULL_SESSION",
         "KDE_SESSION_VERSION",
+        "QT_QPA_PLATFORM",
     ]
     available = [name for name in names if os.environ.get(name)]
     if shutil.which("dbus-update-activation-environment") and available:
@@ -128,6 +129,39 @@ def _start_first(
     return None
 
 
+def _start_user_service(unit: str) -> bool:
+    if not shutil.which("systemctl"):
+        return False
+    result = _run(["systemctl", "--user", "start", unit])
+    if result.returncode != 0:
+        return False
+    status = _run(["systemctl", "--user", "is-active", "--quiet", unit])
+    return status.returncode == 0
+
+
+def _start_polkit_agent(children: list[subprocess.Popen]) -> None:
+    """Start the packaged KDE PolicyKit agent with its proper user service.
+
+    Starting the executable as a loose child works for drawing a window, but it
+    does not reliably register the D-Bus activation name in our hand-built
+    Plasma session. pkexec then falls back to pkttyagent inside Alacritty, which
+    is exactly what CachyOS Hello exposes. The packaged user unit declares the
+    BusName and restart policy, so prefer it after importing this seat's
+    Wayland/session environment into the user manager.
+    """
+    if _start_user_service("plasma-polkit-agent.service"):
+        return
+
+    # Fallback for installations where the service unit is unavailable.
+    proc = _start_first(
+        ["/usr/lib/polkit-kde-authentication-agent-1", "polkit-kde-authentication-agent-1"],
+        [],
+        extra_env={"QT_QPA_PLATFORM": "wayland"},
+    )
+    if proc is not None:
+        children.append(proc)
+
+
 def _wayland_socket_ready() -> bool:
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
     display = os.environ.get("WAYLAND_DISPLAY", "")
@@ -165,11 +199,12 @@ def main() -> int:
     _sync_activation_environment()
 
     children: list[subprocess.Popen] = []
+    _start_polkit_agent(children)
+
     for candidates, args in [
         (["kactivitymanagerd"], []),
         (["kded6"], []),
         (["ksmserver"], []),
-        (["/usr/lib/polkit-kde-authentication-agent-1", "polkit-kde-authentication-agent-1"], []),
         (["plasmashell"], ["--replace"]),
         (["krunner"], []),
     ]:
