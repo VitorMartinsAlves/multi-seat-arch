@@ -15,13 +15,14 @@ input-proxy = ["evdev>=1.7"]
 
 [project.scripts]
 multi-seat-arch = "multiseat_arch.cli:main"
-multi-seat-arch-gui = "multiseat_arch.gui_v2:main"
+multi-seat-arch-gui = "multiseat_arch.gui_v3:main"
 multi-seat-arch-input-proxy = "multiseat_arch.input_proxy:main"
 multi-seat-arch-session = "multiseat_arch.session_shell:main"
 multi-seat-arch-plasma-session = "multiseat_arch.plasma_session:main"
 multi-seat-arch-login-greeter = "multiseat_arch.display_manager_session:greeter_main"
 multi-seat-arch-login-plasma = "multiseat_arch.display_manager_session:plasma_main"
 multi-seat-arch-audio-session = "multiseat_arch.audio:apply_for_current_seat"
+multi-seat-arch-audio-admin = "multiseat_arch.audio_admin:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
