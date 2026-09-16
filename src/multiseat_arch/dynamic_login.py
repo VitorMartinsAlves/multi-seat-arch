@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 MODE_FILE = Path("/etc/multi-seat-arch/dynamic-login")
 ATRIUM_CONFIG = Path("/etc/atrium.conf")
 ATRIUM_BINARY = Path("/usr/bin/atrium")
-GREETER_WRAPPER = "/usr/local/bin/multi-seat-arch-login-greeter"
-PLASMA_WRAPPER = "/usr/local/bin/multi-seat-arch-login-plasma"
 
 
 def enabled() -> bool:
@@ -25,6 +24,21 @@ def _write_atomic(path: Path, text: str, mode: int = 0o644) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def _resolve_wrapper(name: str) -> str:
+    found = shutil.which(name)
+    if found and Path(found).is_file():
+        return found
+
+    for candidate in (Path("/usr/bin") / name, Path("/usr/local/bin") / name):
+        if candidate.is_file():
+            return str(candidate)
+
+    raise RuntimeError(
+        f"Wrapper de login ausente: {name}. Reinstale o projeto com: "
+        "bash scripts/install.sh"
+    )
+
+
 def enable() -> None:
     if os.geteuid() != 0:
         raise PermissionError("Execute como root.")
@@ -32,9 +46,9 @@ def enable() -> None:
         raise RuntimeError(
             "Atrium multiseat não está instalado. Rode scripts/build-atrium-login-manager.sh primeiro."
         )
-    for wrapper in (GREETER_WRAPPER, PLASMA_WRAPPER):
-        if not Path(wrapper).is_file():
-            raise RuntimeError(f"Wrapper de login ausente: {wrapper}. Reinstale o projeto.")
+
+    greeter_wrapper = _resolve_wrapper("multi-seat-arch-login-greeter")
+    plasma_wrapper = _resolve_wrapper("multi-seat-arch-login-plasma")
 
     # Atrium owns only the synthetic display seats created by Multi Seat Arch.
     # seat0 remains reserved for the normal desktop/display manager used by restore.
@@ -42,8 +56,8 @@ def enable() -> None:
 # Each physical display seat gets an independent greeter and can authenticate
 # any local user through PAM. The old seat.user fields are ignored at runtime.
 
-greeter = {GREETER_WRAPPER}
-compositor = {PLASMA_WRAPPER}
+greeter = {greeter_wrapper}
+compositor = {plasma_wrapper}
 desktop = KDE
 allow-duplicate-login = false
 ignore-seat = seat0
