@@ -26,9 +26,14 @@ def _start_kwin(*, greeter: bool) -> tuple[subprocess.Popen, dict[str, str]]:
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("DISPLAY", None)
     env.pop("XAUTHORITY", None)
+    # Atrium already handed us a live DRM lease fd. Do not propagate the
+    # textual lease name into KWin as well: keeping both mechanisms enabled can
+    # make KWin try to reacquire the same lease later (notably when XWayland is
+    # brought up), which races/fails on secondary seats. The inherited fixed fd
+    # is the single source of truth for the compositor lifetime.
+    env.pop("KWIN_DRM_LEASE", None)
     env.update(
         {
-            "KWIN_DRM_LEASE": connector,
             "KWIN_DRM_LEASE_FD": str(KWIN_FIXED_LEASE_FD),
             "KWIN_DRM_DEVICES": f"/dev/dri/{card}",
             "XDG_RUNTIME_DIR": str(runtime),
@@ -195,9 +200,9 @@ def plasma_main() -> int:
         env.pop("KWIN_DRM_LEASE", None)
         env.pop("KWIN_DRM_DEVICES", None)
 
-        # The launcher now uses kwin_wayland_wrapper. It allocates DISPLAY and
-        # XAUTHORITY before XWayland itself starts, so this does not add the old
-        # 8-second black-screen delay and still works with lazy XWayland.
+        # The launcher uses kwin_wayland_wrapper. It allocates DISPLAY and
+        # XAUTHORITY before XWayland itself starts, so this works with lazy
+        # XWayland without adding an artificial startup delay.
         env.update(_x11_env_from_kwin_wrapper(kwin.pid, timeout=2.0))
 
         _restore_user_runtime(env)
