@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 class KWinPatchTests(unittest.TestCase):
-    def test_patcher_adds_external_lease_path_idempotently(self):
+    def test_patcher_adds_external_lease_paths_idempotently(self):
         repo = Path(__file__).resolve().parents[1]
         script = repo / "scripts/patch-kwin-drm-lease.py"
         with tempfile.TemporaryDirectory() as tmp:
@@ -30,6 +30,27 @@ class KWinPatchTests(unittest.TestCase):
                 "} // namespace KWin\n",
                 encoding="utf-8",
             )
+            (root / "src/core/drmdevice.cpp").write_text(
+                "#include <fcntl.h>\n\n"
+                "namespace KWin\n{\n\n"
+                "std::unique_ptr<DrmDevice> DrmDevice::openWithAuthentication(const QString &path, int authenticatedFd)\n"
+                "{\n"
+                "    FileDescriptor fd(::open(path.toLocal8Bit(), O_RDWR | O_CLOEXEC));\n"
+                "    if (!fd.isValid()) {\n"
+                "        qCWarning(KWIN_CORE, \"Failed to open drm node %s: %s\", qPrintable(path), strerror(errno));\n"
+                "        return nullptr;\n"
+                "    }\n"
+                "    struct stat buf;\n"
+                "    if (fstat(fd.get(), &buf) == -1) { return nullptr; }\n"
+                "    if (authenticatedFd != -1) {\n"
+                "        drm_magic_t magic;\n"
+                "    }\n"
+                "    gbm_device *device = gbm_create_device(fd.get());\n"
+                "    return std::unique_ptr<DrmDevice>(new DrmDevice(path, buf.st_rdev, std::move(fd), device));\n"
+                "}\n\n"
+                "} // namespace KWin\n",
+                encoding="utf-8",
+            )
 
             subprocess.run(["python", str(script), str(root)], check=True)
             subprocess.run(["python", str(script), str(root)], check=True)
@@ -40,6 +61,14 @@ class KWinPatchTests(unittest.TestCase):
             self.assertIn("dlm_get_lease", session)
             self.assertIn("s_multiSeatLeases", session)
             self.assertEqual(session.count("MULTI_SEAT_ARCH_DRM_LEASE"), 1)
+
+            device = (root / "src/core/drmdevice.cpp").read_text(encoding="utf-8")
+            self.assertIn("MULTI_SEAT_ARCH_DRMDEVICE_LEASE_FD", device)
+            self.assertIn("useExternalLease", device)
+            self.assertIn("F_DUPFD_CLOEXEC", device)
+            self.assertIn("Using external DRM lease fd directly", device)
+            self.assertIn("authenticatedFd != -1 && !useExternalLease", device)
+            self.assertEqual(device.count("MULTI_SEAT_ARCH_DRMDEVICE_LEASE_FD"), 1)
 
             cmake = (root / "CMakeLists.txt").read_text(encoding="utf-8")
             self.assertEqual(cmake.count("pkg_check_modules(DlmClient"), 1)
