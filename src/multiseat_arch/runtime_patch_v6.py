@@ -2,12 +2,111 @@ from __future__ import annotations
 
 import pwd
 import shutil
+import socket
+import time
 from pathlib import Path
 from types import ModuleType
 
 from .runtime_patch import _seat_service_properties
 
 PLASMA_COMPOSITOR = "kwin-wayland-msa"
+
+
+def _wayland_socket_fingerprint(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    if not path.is_socket():
+        return None
+    return (stat.st_ino, stat.st_mtime_ns)
+
+
+def _snapshot_wayland_sockets(runtime_dir: Path, uid: int) -> dict[str, tuple[int, int]]:
+    snapshot: dict[str, tuple[int, int]] = {}
+    for path in runtime_dir.glob("wayland-*"):
+        if path.name.endswith(".lock"):
+            continue
+        try:
+            if path.stat().st_uid != uid:
+                continue
+        except OSError:
+            continue
+        fingerprint = _wayland_socket_fingerprint(path)
+        if fingerprint is not None:
+            snapshot[path.name] = fingerprint
+    return snapshot
+
+
+def _socket_accepts_connections(path: Path) -> bool:
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(0.2)
+    try:
+        probe.connect(str(path))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
+
+
+def _wait_for_new_wayland_socket(
+    backend: ModuleType,
+    uid: int,
+    runtime_dir: Path,
+    before: dict[str, tuple[int, int]],
+    unit: str,
+    timeout: float = 25.0,
+) -> str:
+    """Return the socket created by this KWin instance, never a stale one.
+
+    The generic backend waiter returns the first ``wayland-*`` socket in the
+    user's runtime directory. On the secondary Plasma user that directory can
+    contain a stale socket from an earlier failed attempt, so plasmashell gets
+    pointed at a dead compositor while KWin itself is actually running.
+
+    Compare inode/mtime against a pre-launch snapshot and require that the
+    selected socket accepts a real AF_UNIX connection. This also handles KWin
+    reusing the same name after replacing a stale socket because the inode will
+    change.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        candidates: list[Path] = []
+        for path in sorted(runtime_dir.glob("wayland-*")):
+            if path.name.endswith(".lock"):
+                continue
+            try:
+                if path.stat().st_uid != uid:
+                    continue
+            except OSError:
+                continue
+            current = _wayland_socket_fingerprint(path)
+            if current is None:
+                continue
+            if before.get(path.name) == current:
+                continue
+            candidates.append(path)
+
+        for path in candidates:
+            if _socket_accepts_connections(path):
+                return path.name
+
+        if backend._unit_failed(unit) or not backend._unit_active(unit):
+            log = backend._unit_log_tail(unit, lines=120)
+            raise RuntimeError(
+                f"KWin encerrou antes de publicar um socket Wayland novo ({unit})."
+                + (f"\n{log}" if log else "")
+            )
+        time.sleep(0.1)
+
+    existing = ", ".join(sorted(_snapshot_wayland_sockets(runtime_dir, uid))) or "nenhum"
+    log = backend._unit_log_tail(unit, lines=120)
+    raise RuntimeError(
+        "KWin não publicou um socket Wayland novo e conectável em "
+        f"{timeout:.0f}s para uid={uid}. Sockets atuais: {existing}."
+        + (f"\n{log}" if log else "")
+    )
 
 
 def install(backend: ModuleType) -> None:
@@ -43,6 +142,9 @@ def install(backend: ModuleType) -> None:
 
         card = seat.connector.split("-", 1)[0]
         runtime_dir = Path(f"/run/user/{uid}")
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        sockets_before = _snapshot_wayland_sockets(runtime_dir, uid)
+
         env = {
             "XDG_SEAT": runtime,
             "XDG_SESSION_TYPE": "wayland",
@@ -67,12 +169,18 @@ def install(backend: ModuleType) -> None:
             properties=_seat_service_properties(),
         )
 
-        # Let KWin's own wrapper allocate the Wayland socket. Forcing --socket
-        # on kwin_wayland_wrapper caused both compositors to come up black on
-        # the target CachyOS/KWin 6.7.5 host. The users are distinct, so their
-        # XDG_RUNTIME_DIR namespaces are already isolated; we only need to bind
-        # Plasma to the exact socket that this compositor actually created.
-        wayland_display = backend._wait_for_wayland(uid, f"{unit}.service", timeout=25.0)
+        # kwin_wayland_wrapper must choose the socket itself because it creates
+        # and passes the listening FD to kwin_wayland. We identify the exact
+        # socket created by this launch rather than taking the first stale
+        # wayland-* entry from XDG_RUNTIME_DIR.
+        wayland_display = _wait_for_new_wayland_socket(
+            backend,
+            uid,
+            runtime_dir,
+            sockets_before,
+            f"{unit}.service",
+            timeout=25.0,
+        )
 
         session_env = dict(env)
         session_env.pop("KWIN_DRM_LEASE", None)
