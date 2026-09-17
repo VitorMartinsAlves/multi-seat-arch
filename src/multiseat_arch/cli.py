@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import autostart
 from . import backend
 from . import config as cfg
 from . import dynamic_login
@@ -51,6 +52,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("login-enable", help="ativa greeter por tela e login de qualquer usuário local")
     sub.add_parser("login-disable", help="desativa o greeter e volta ao usuário fixo por seat")
     sub.add_parser("login-status", help="mostra se o login dinâmico está ativo")
+    sub.add_parser("autostart-enable", help="inicia o multiseat automaticamente ao ligar o PC")
+    sub.add_parser("autostart-disable", help="desativa o início automático do multiseat")
+    sub.add_parser("autostart-status", help="mostra se o início automático está ativo")
 
     validate_parser = sub.add_parser("validate")
     validate_parser.add_argument("config")
@@ -69,6 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("_activate", help=argparse.SUPPRESS)
     sub.add_parser("_restore-now", help=argparse.SUPPRESS)
     sub.add_parser("_watch-inputs", help=argparse.SUPPRESS)
+    sub.add_parser("_boot", help=argparse.SUPPRESS)
     return parser
 
 
@@ -152,9 +157,33 @@ def _prepare_dynamic_login(config) -> None:
             "KWin experimental não está instalado. Rode: bash scripts/build-kwin-plasma.sh"
         )
     config.compositor = PLASMA_EXPERIMENTAL
-    # enable() also validates Atrium and both login wrappers before writing the
-    # mode marker/configuration, so any missing component is reported now.
     dynamic_login.enable()
+
+
+def _enable_autostart() -> None:
+    config = cfg.load()
+    errors = validate(config)
+    if errors:
+        raise RuntimeError("\n".join(errors))
+    _prepare_dynamic_login(config)
+    cfg.save(config)
+    autostart.enable()
+
+
+def _boot_multiseat() -> None:
+    """Boot-time entry point used by the persistent systemd service.
+
+    This runs before the host display manager. If activation fails, backend's
+    existing rollback returns the machine to graphical.target/normal SDDM.
+    """
+    before_activation()
+    config = cfg.load()
+    errors = validate(config)
+    if errors:
+        raise RuntimeError("\n".join(errors))
+    _prepare_dynamic_login(config)
+    cfg.save(config)
+    activate_now(config)
 
 
 def main() -> int:
@@ -220,6 +249,20 @@ def main() -> int:
             print("ativo" if dynamic_login.enabled() else "desativado")
             return 0
 
+        if args.cmd == "autostart-enable":
+            _enable_autostart()
+            print("Início automático ativado. No próximo boot, cada seat abrirá diretamente sua tela de login.")
+            return 0
+
+        if args.cmd == "autostart-disable":
+            autostart.disable()
+            print("Início automático desativado. O próximo boot usará o desktop normal.")
+            return 0
+
+        if args.cmd == "autostart-status":
+            print("ativo" if autostart.enabled() else "desativado")
+            return 0
+
         if args.cmd == "create-user":
             create_seat_user(args.username)
             print(f"Usuário '{args.username}' criado com home próprio.")
@@ -276,6 +319,10 @@ def main() -> int:
 
         if args.cmd == "_watch-inputs":
             watch_inputs(cfg.load)
+            return 0
+
+        if args.cmd == "_boot":
+            _boot_multiseat()
             return 0
 
         return 1
