@@ -3,12 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
+from . import autostart
 from . import backend
 from . import config as cfg
-from .runtime_patch import install as install_runtime_patch
-
-install_runtime_patch(backend)
+from . import dynamic_login
 
 activate_now = backend.activate_now
 doctor = backend.doctor
@@ -30,6 +30,9 @@ from .status import runtime_status
 from .transitions import before_activation, before_restore
 from .users import create_seat_user
 
+PLASMA_EXPERIMENTAL = "/usr/local/bin/kwin-wayland-msa"
+LABWC_STABLE = "/usr/local/bin/labwc"
+
 
 def _slots_dict(obj):
     return {key: getattr(obj, key) for key in obj.__slots__}
@@ -41,6 +44,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("discover")
     sub.add_parser("doctor")
     sub.add_parser("status")
+    sub.add_parser("plasma-enable", help="ativa o backend KWin/Plasma experimental")
+    sub.add_parser("plasma-disable", help="volta ao backend Labwc estável")
+    sub.add_parser("login-enable", help="ativa greeter por tela e login de qualquer usuário local")
+    sub.add_parser("login-disable", help="desativa o greeter e volta ao usuário fixo por seat")
+    sub.add_parser("login-status", help="mostra se o login dinâmico está ativo")
+    sub.add_parser("autostart-enable", help="inicia o multiseat automaticamente ao ligar o PC")
+    sub.add_parser("autostart-disable", help="desativa o início automático do multiseat")
+    sub.add_parser("autostart-status", help="mostra se o início automático está ativo")
 
     validate_parser = sub.add_parser("validate")
     validate_parser.add_argument("config")
@@ -59,6 +70,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("_activate", help=argparse.SUPPRESS)
     sub.add_parser("_restore-now", help=argparse.SUPPRESS)
     sub.add_parser("_watch-inputs", help=argparse.SUPPRESS)
+    sub.add_parser("_boot", help=argparse.SUPPRESS)
+    sub.add_parser("_boot-recover", help=argparse.SUPPRESS)
     return parser
 
 
@@ -122,6 +135,60 @@ def _apply_sync_transaction(config) -> None:
             ) from original
 
 
+def _set_compositor(path: str) -> None:
+    config = cfg.load()
+    config.compositor = path
+    cfg.save(config)
+
+
+def _prepare_dynamic_login(config) -> None:
+    """Validate the Plasma/Atrium login path before scheduling activation."""
+    if not Path(PLASMA_EXPERIMENTAL).is_file():
+        raise RuntimeError(
+            "KWin experimental não está instalado. Rode: bash scripts/build-kwin-plasma.sh"
+        )
+    config.compositor = PLASMA_EXPERIMENTAL
+    dynamic_login.enable()
+
+
+def _enable_autostart() -> None:
+    config = cfg.load()
+    errors = validate(config)
+    if errors:
+        raise RuntimeError("\n".join(errors))
+    _prepare_dynamic_login(config)
+    cfg.save(config)
+    autostart.enable()
+
+
+def _boot_multiseat() -> None:
+    """Boot-time entry point used by the persistent systemd service.
+
+    Recovery is intentionally external to this process. Any exception, crash or
+    systemd timeout marks the service failed and triggers the independent
+    `multi-seat-arch-autostart-recovery.service` via OnFailure=.
+    """
+    before_activation()
+    config = cfg.load()
+    errors = validate(config)
+    if errors:
+        raise RuntimeError("\n".join(errors))
+    _prepare_dynamic_login(config)
+    cfg.save(config)
+    activate_now(config)
+
+
+def _recover_failed_boot() -> None:
+    """Make both the current boot and the following boot safe after failure."""
+    # First make the next reboot safe even if graphical recovery below fails.
+    autostart.disable_after_boot_failure()
+    before_restore()
+    # The fully patched restore path resets inputs/audio/user managers and
+    # restarts the normal display manager. It is safe when activation only made
+    # partial progress because cleanup operations are intentionally idempotent.
+    restore_now()
+
+
 def main() -> int:
     args = _build_parser().parse_args()
 
@@ -150,6 +217,55 @@ def main() -> int:
             print(json.dumps(runtime_status(), indent=2, ensure_ascii=False))
             return 0
 
+        if args.cmd == "plasma-enable":
+            if not Path(PLASMA_EXPERIMENTAL).is_file():
+                raise RuntimeError(
+                    "KWin experimental não está instalado. Rode scripts/build-kwin-plasma.sh primeiro."
+                )
+            _set_compositor(PLASMA_EXPERIMENTAL)
+            print("Backend Plasma/KWin experimental ativado na configuração.")
+            return 0
+
+        if args.cmd == "plasma-disable":
+            if dynamic_login.enabled():
+                raise RuntimeError("Desative primeiro o login dinâmico com: multi-seat-arch login-disable")
+            _set_compositor(LABWC_STABLE)
+            print("Backend Labwc estável restaurado na configuração.")
+            return 0
+
+        if args.cmd == "login-enable":
+            if not Path(PLASMA_EXPERIMENTAL).is_file():
+                raise RuntimeError(
+                    "KWin experimental não está instalado. Rode scripts/build-kwin-plasma.sh primeiro."
+                )
+            _set_compositor(PLASMA_EXPERIMENTAL)
+            dynamic_login.enable()
+            print("Login dinâmico ativado: cada tela terá greeter próprio e usuário não fixo.")
+            return 0
+
+        if args.cmd == "login-disable":
+            dynamic_login.disable()
+            print("Login dinâmico desativado; o modo Plasma volta a usar o usuário fixo configurado por seat.")
+            return 0
+
+        if args.cmd == "login-status":
+            print("ativo" if dynamic_login.enabled() else "desativado")
+            return 0
+
+        if args.cmd == "autostart-enable":
+            _enable_autostart()
+            print("Início automático ativado. No próximo boot, cada seat abrirá diretamente sua tela de login.")
+            return 0
+
+        if args.cmd == "autostart-disable":
+            autostart.disable()
+            print("Início automático desativado. O próximo boot usará o desktop normal.")
+            return 0
+
+        if args.cmd == "autostart-status":
+            print("ativo" if autostart.enabled() else "desativado")
+            return 0
+
         if args.cmd == "create-user":
             create_seat_user(args.username)
             print(f"Usuário '{args.username}' criado com home próprio.")
@@ -167,6 +283,7 @@ def main() -> int:
                 print("Configuração salva e periféricos sincronizados.")
             elif args.cmd == "apply-start":
                 before_activation()
+                _prepare_dynamic_login(config)
                 cfg.save(config)
                 start(config)
                 print("Configuração salva e inicialização agendada.")
@@ -177,7 +294,10 @@ def main() -> int:
 
         if args.cmd == "start":
             before_activation()
-            start(cfg.load())
+            config = cfg.load()
+            _prepare_dynamic_login(config)
+            cfg.save(config)
+            start(config)
             print("Inicialização agendada.")
             return 0
 
@@ -202,6 +322,14 @@ def main() -> int:
 
         if args.cmd == "_watch-inputs":
             watch_inputs(cfg.load)
+            return 0
+
+        if args.cmd == "_boot":
+            _boot_multiseat()
+            return 0
+
+        if args.cmd == "_boot-recover":
+            _recover_failed_boot()
             return 0
 
         return 1

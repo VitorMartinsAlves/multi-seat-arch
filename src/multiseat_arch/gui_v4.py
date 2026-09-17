@@ -1,0 +1,346 @@
+from __future__ import annotations
+
+import getpass
+import json
+
+from PyQt6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QMessageBox, QPushButton
+
+from . import autostart
+from . import config as cfg
+from .device_ui import is_system_device, is_useful_input
+from .gui import MODE_DISABLED, MODE_MIXED, MODE_SHARED, MODE_UNMANAGED
+from .gui_v3 import MainWindow as PreviousMainWindow
+from .model import Config, DeviceRule, Seat
+
+
+class MainWindow(PreviousMainWindow):
+    """Dynamic-seat GUI: one seat panel per configured/connected display."""
+
+    def _build(self) -> None:
+        super()._build()
+        self.seat_panels: list[dict] = [self.a, self.b]
+        self.seat_splitter = self.a["widget"].parentWidget()
+
+        controls = QHBoxLayout()
+        hint = QLabel("Seats podem ser adicionados para cada monitor conectado.")
+        hint.setStyleSheet("color: palette(mid)")
+        controls.addWidget(hint)
+        controls.addStretch(1)
+
+        self.autostart_checkbox = QCheckBox("Iniciar multiseat junto com o sistema")
+        self.autostart_checkbox.setToolTip(
+            "Ao ligar o PC, cada monitor abre diretamente sua própria tela de login, "
+            "sem passar primeiro pelo desktop normal."
+        )
+        self.autostart_checkbox.setChecked(autostart.enabled())
+        self.autostart_checkbox.toggled.connect(self._autostart_toggled)
+        controls.addWidget(self.autostart_checkbox)
+
+        add_button = QPushButton("+ Adicionar seat")
+        add_button.clicked.connect(self.add_seat)
+        controls.addWidget(add_button)
+        self.remove_seat_button = QPushButton("Remover último seat")
+        self.remove_seat_button.clicked.connect(self.remove_last_seat)
+        controls.addWidget(self.remove_seat_button)
+        self.centralWidget().layout().insertLayout(3, controls)
+        self._update_remove_button()
+
+    def _set_autostart_checkbox(self, value: bool) -> None:
+        self.autostart_checkbox.blockSignals(True)
+        self.autostart_checkbox.setChecked(value)
+        self.autostart_checkbox.blockSignals(False)
+
+    def _autostart_toggled(self, checked: bool) -> None:
+        if checked:
+            if not self.validate_ui(show_message=False):
+                QMessageBox.warning(
+                    self,
+                    "Início automático",
+                    "Corrija a configuração antes de ativar o início automático.",
+                )
+                self._set_autostart_checkbox(False)
+                return
+            # Autostart must boot the configuration currently visible in the GUI,
+            # not an older /etc copy. Persist seats/peripherals/audio first.
+            if not self._apply_config_action("apply") or not self._save_audio_rules():
+                self._set_autostart_checkbox(False)
+                return
+            if not self._pkexec("autostart-enable"):
+                self._set_autostart_checkbox(False)
+                return
+            self.status.setText(
+                "Início automático ativado. No próximo boot, cada seat abrirá direto na tela de login."
+            )
+            return
+
+        if not self._pkexec("autostart-disable"):
+            self._set_autostart_checkbox(True)
+            return
+        self.status.setText(
+            "Início automático desativado. No próximo boot, o PC iniciará no desktop normal."
+        )
+
+    @staticmethod
+    def _seat_suffix(index: int) -> str:
+        return chr(ord("a") + index) if index < 26 else str(index + 1)
+
+    @classmethod
+    def _seat_name_for_index(cls, index: int) -> str:
+        return f"seat-{cls._seat_suffix(index)}"
+
+    @classmethod
+    def _seat_title_for_index(cls, index: int) -> str:
+        suffix = cls._seat_suffix(index)
+        return f"Seat {suffix.upper()}" if suffix.isalpha() else f"Seat {suffix}"
+
+    def _panel_by_name(self, name: str) -> dict | None:
+        return next((panel for panel in self.seat_panels if panel["name"] == name), None)
+
+    def _append_seat_panel(self, *, name: str | None = None, enabled: bool = False) -> dict:
+        index = len(self.seat_panels)
+        name = name or self._seat_name_for_index(index)
+        existing = self._panel_by_name(name)
+        if existing is not None:
+            return existing
+        panel = self._seat_panel(self._seat_title_for_index(index), name)
+        panel["enabled"].setChecked(enabled)
+        self.seat_panels.append(panel)
+        self.seat_splitter.addWidget(panel["widget"])
+        self._update_remove_button()
+        return panel
+
+    def _update_remove_button(self) -> None:
+        if hasattr(self, "remove_seat_button"):
+            self.remove_seat_button.setEnabled(len(getattr(self, "seat_panels", [])) > 2)
+
+    def add_seat(self, _checked=False) -> None:
+        panel = self._append_seat_panel(enabled=True)
+        self._populate_one_panel(panel, preferred="")
+        self._assign_first_free_connector(panel)
+        self._render_device_table()
+        self._render_audio_table()
+        self.status.setText(f"{panel['name']} adicionado. Escolha monitor e periféricos.")
+
+    def remove_last_seat(self, _checked=False) -> None:
+        if len(self.seat_panels) <= 2:
+            return
+        panel = self.seat_panels[-1]
+        name = panel["name"]
+        answer = QMessageBox.question(
+            self,
+            "Remover seat",
+            f"Remover {name}? Periféricos e áudio atribuídos a ele voltarão para Sistema / seat0.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        for key, rule in list(self.rules.items()):
+            if rule.mode == "seat" and rule.seat == name:
+                self.rules[key] = DeviceRule(key=key, mode=MODE_UNMANAGED, name=rule.name)
+        for rule in self.audio_rules.values():
+            if rule.seat == name:
+                rule.seat = "unmanaged"
+        self.seat_panels.pop()
+        panel["widget"].setParent(None)
+        panel["widget"].deleteLater()
+        self._update_remove_button()
+        self._render_device_table()
+        self._render_audio_table()
+        self.status.setText(f"{name} removido.")
+
+    def _ensure_panel_count(self, count: int) -> None:
+        while len(self.seat_panels) < count:
+            self._append_seat_panel(enabled=False)
+
+    def _load_saved_config(self) -> None:
+        try:
+            saved = cfg.load()
+        except (OSError, ValueError, json.JSONDecodeError):
+            return
+        self.rules = {rule.key: rule for rule in saved.devices}
+        for seat in saved.seats:
+            panel = self._panel_by_name(seat.name)
+            if panel is None:
+                panel = self._append_seat_panel(name=seat.name, enabled=seat.enabled)
+            panel["enabled"].setChecked(seat.enabled)
+            panel["saved_connector"] = seat.connector
+
+    def _populate_one_panel(self, panel: dict, *, preferred: str) -> None:
+        panel["monitor"].clear()
+        for display in self.displays:
+            panel["monitor"].addItem(display.connector, display.connector)
+        panel["monitor"].setCurrentIndex(-1)
+        if preferred:
+            self._set_combo_data(panel["monitor"], preferred)
+            if panel["monitor"].currentData() != preferred:
+                # Keep a disconnected saved connector visible so validation can
+                # report it instead of silently switching to another monitor.
+                panel["monitor"].addItem(f"{preferred} (desconectado)", preferred)
+                self._set_combo_data(panel["monitor"], preferred)
+
+    def _assign_first_free_connector(self, panel: dict) -> None:
+        used = {
+            str(other["monitor"].currentData())
+            for other in self.seat_panels
+            if other is not panel and other["monitor"].currentData()
+        }
+        for display in self.displays:
+            if display.connector not in used:
+                self._set_combo_data(panel["monitor"], display.connector)
+                return
+
+    def _populate_seat_selectors(self) -> None:
+        self._ensure_panel_count(max(2, len(self.displays)))
+        preferred = {
+            panel["name"]: str(panel.pop("saved_connector", None) or panel["monitor"].currentData() or "")
+            for panel in self.seat_panels
+        }
+        assigned: set[str] = set()
+        unassigned: list[dict] = []
+
+        for panel in self.seat_panels:
+            wanted = preferred.get(panel["name"], "")
+            self._populate_one_panel(panel, preferred="")
+            connected = any(d.connector == wanted for d in self.displays)
+            if wanted and connected and wanted not in assigned:
+                self._set_combo_data(panel["monitor"], wanted)
+                assigned.add(wanted)
+            elif wanted and not connected:
+                self._populate_one_panel(panel, preferred=wanted)
+                # A disconnected connector is intentionally not considered free.
+                assigned.add(wanted)
+            else:
+                unassigned.append(panel)
+
+        available = [d.connector for d in self.displays if d.connector not in assigned]
+        for panel in unassigned:
+            if available:
+                connector = available.pop(0)
+                self._set_combo_data(panel["monitor"], connector)
+                assigned.add(connector)
+            else:
+                panel["monitor"].setCurrentIndex(-1)
+
+    def build_config(self) -> Config:
+        legacy_user = getpass.getuser()
+        return Config(
+            version=2,
+            seats=[
+                Seat(
+                    name=panel["name"],
+                    connector=panel["monitor"].currentData() or "",
+                    user=legacy_user,
+                    enabled=panel["enabled"].isChecked(),
+                )
+                for panel in self.seat_panels
+            ],
+            devices=list(self.rules.values()),
+        )
+
+    def _make_destination_combo(self, keys: list[str], current: str) -> QComboBox:
+        combo = QComboBox()
+        if current == MODE_MIXED:
+            combo.addItem("Misto (várias regras)", MODE_MIXED)
+        for index, panel in enumerate(self.seat_panels):
+            label = self._seat_title_for_index(index)
+            if not panel["enabled"].isChecked():
+                label += " (desativado)"
+            combo.addItem(label, panel["name"])
+        for label, value in (
+            ("Compartilhado", MODE_SHARED),
+            ("Desativado", MODE_DISABLED),
+            ("Sistema / seat0", MODE_UNMANAGED),
+        ):
+            combo.addItem(label, value)
+        index = combo.findData(current)
+        combo.setCurrentIndex(index if index >= 0 else combo.findData(MODE_UNMANAGED))
+        combo.currentIndexChanged.connect(
+            lambda _i, ks=tuple(keys), c=combo: self._rules_changed(list(ks), c)
+        )
+        return combo
+
+    def _rules_changed(self, keys: list[str], combo: QComboBox) -> None:
+        if self.loading:
+            return
+        choice = str(combo.currentData())
+        if choice == MODE_MIXED:
+            return
+        seat_names = {panel["name"] for panel in self.seat_panels}
+        present = {device.key: device for device in self.inputs}
+        for key in keys:
+            current = self.rules.get(key)
+            name = present[key].name if key in present else current.name if current else ""
+            if choice in seat_names:
+                self.rules[key] = DeviceRule(key=key, mode="seat", seat=choice, name=name)
+            else:
+                self.rules[key] = DeviceRule(key=key, mode=choice, seat="", name=name)  # type: ignore[arg-type]
+        self.status.setText("Alteração pendente. Salve ou aplique os periféricos para efetivar.")
+
+    def _audio_destination_combo(self, output) -> QComboBox:
+        combo = QComboBox()
+        combo.addItem("Sistema / sem preferência", "unmanaged")
+        for index, panel in enumerate(self.seat_panels):
+            label = self._seat_title_for_index(index)
+            if not panel["enabled"].isChecked():
+                label += " (desativado)"
+            combo.addItem(label, panel["name"])
+        current = self.audio_rules.get(output.name)
+        wanted = current.seat if current else "unmanaged"
+        index = combo.findData(wanted)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.currentIndexChanged.connect(
+            lambda _i, name=output.name, desc=output.description, c=combo: self._audio_rule_changed(name, desc, c)
+        )
+        return combo
+
+    def auto_assign(self, _checked=False) -> None:
+        if not self.displays:
+            QMessageBox.warning(self, "Distribuição automática", "Nenhum monitor conectado.")
+            return
+        self._ensure_panel_count(max(2, len(self.displays)))
+        ordered = [d for d in self.displays if "eDP" not in d.connector]
+        ordered += [d for d in self.displays if "eDP" in d.connector]
+        for index, panel in enumerate(self.seat_panels):
+            if index < len(ordered):
+                panel["enabled"].setChecked(True)
+                self._set_combo_data(panel["monitor"], ordered[index].connector)
+            elif index >= 2:
+                panel["enabled"].setChecked(False)
+
+        internal_panel = next(
+            (p for p in self.seat_panels if "eDP" in str(p["monitor"].currentData() or "")),
+            None,
+        )
+        external_panel = next(
+            (p for p in self.seat_panels if p is not internal_panel and p["enabled"].isChecked()),
+            None,
+        )
+        for device in self.inputs:
+            if not is_useful_input(device) or is_system_device(device):
+                self.rules[device.key] = DeviceRule(key=device.key, mode=MODE_UNMANAGED, name=device.name)
+                continue
+            target = external_panel if device.bus.lower() in {"usb", "bluetooth"} else internal_panel
+            if target is None:
+                self.rules[device.key] = DeviceRule(key=device.key, mode=MODE_UNMANAGED, name=device.name)
+            else:
+                self.rules[device.key] = DeviceRule(key=device.key, mode="seat", seat=target["name"], name=device.name)
+        self._render_device_table()
+        self._render_audio_table()
+        QMessageBox.information(
+            self,
+            "Distribuição automática",
+            "Monitores foram distribuídos entre os seats detectados. Inputs internos foram para o seat da tela interna; USB/Bluetooth para o primeiro seat externo. Revise seats adicionais antes de iniciar.",
+        )
+
+
+def main() -> None:
+    from PyQt6.QtWidgets import QApplication
+    import sys
+
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    raise SystemExit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
