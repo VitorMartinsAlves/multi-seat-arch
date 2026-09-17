@@ -19,14 +19,14 @@ jobs:
       - run: pip install -e '.[gui,input-proxy]'
       - run: python -m compileall -q src
       - run: python -m unittest discover -s tests -v
-      - run: python -c 'import multiseat_arch.input_proxy; import multiseat_arch.gui_v4'
+      - run: python -c 'import multiseat_arch.input_proxy; import multiseat_arch.gui_current; import multiseat_arch.display_manager_current; import multiseat_arch.plasma_session_current'
       - name: Construct GUI headlessly
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           python - <<'PY'
           from PyQt6.QtWidgets import QApplication
-          from multiseat_arch.gui_v4 import MainWindow
+          from multiseat_arch.gui_current import MainWindow
 
           app = QApplication([])
           window = MainWindow()
@@ -51,7 +51,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           python -m compileall -q src
-          python -c 'import multiseat_arch; import multiseat_arch.cli; import multiseat_arch.gui_v4; import multiseat_arch.sddm_greeter_bridge'
+          python -c 'import multiseat_arch; import multiseat_arch.cli; import multiseat_arch.gui_current; import multiseat_arch.display_manager_current; import multiseat_arch.plasma_session_current; import multiseat_arch.sddm_greeter_bridge'
       - name: Run unit tests on Arch userspace
         env:
           QT_QPA_PLATFORM: offscreen
