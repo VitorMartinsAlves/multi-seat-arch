@@ -72,6 +72,17 @@ def install(backend: ModuleType) -> None:
     previous_activate = backend.activate_now
 
     def start(config) -> None:
+        # Do not arm a system-level recovery timer for a request that the
+        # backend will reject before scheduling activation. This keeps invalid
+        # config and unprivileged calls side-effect free while preserving the
+        # established watchdog-before-schedule ordering for valid starts.
+        if backend.os.geteuid() != 0:
+            previous_start(config)
+            return
+        if backend.validate(config):
+            previous_start(config)
+            return
+
         _arm(backend)
         try:
             previous_start(config)
