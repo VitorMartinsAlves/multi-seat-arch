@@ -72,7 +72,7 @@ class AtriumPatchTests(unittest.TestCase):
                 "                                     const char *session_id) {\n"
                 "    const char *desktop = \"KDE\";\n"
                 "    int n_pam = 0;\n"
-                "    int n_env = 5 + n_pam + 4;\n"
+                "    int    n_env = 5 + n_pam + 4;\n"
                 "    char *env[32]; int i = 0;\n"
                 '    if (asprintf(&env[i++], "XDG_CURRENT_DESKTOP=%s", desktop) < 0)\n'
                 "        goto oom;\n"
@@ -90,7 +90,7 @@ class AtriumPatchTests(unittest.TestCase):
                 "    const char *chosen_session = \"\";\n"
                 "    struct { const char *name; } seat = {\"seat-card1-HDMI-A-1\"};\n"
                 "    typeof(seat) *s = &seat;\n"
-                '    child_exec_compositor(username, &pam_result, chosen_session ? chosen_session : "");\n'
+                '        child_exec_compositor(username, &pam_result, chosen_session ? chosen_session : "");\n'
                 "}\n",
                 encoding="utf-8",
             )
