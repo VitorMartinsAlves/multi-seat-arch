@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install target-platform test dependencies
         run: |
-          pacman -Syu --noconfirm python python-pip libegl git
+          pacman -Syu --noconfirm python python-pip libegl libxkbcommon git
           python -m pip install --break-system-packages -e '.[gui,input-proxy]'
       - name: Compile and import current runtime
         env:
