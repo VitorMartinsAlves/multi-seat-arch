@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 AUDIO_CONFIG = Path("/etc/multi-seat-arch/audio.json")
+_SEAT_RE = re.compile(r"seat-[A-Za-z0-9_-]+$")
 
 
 @dataclass(slots=True)
@@ -29,6 +30,10 @@ class AudioRule:
     output: str
     seat: str
     description: str = ""
+
+
+def _valid_audio_destination(value: str) -> bool:
+    return value == "unmanaged" or bool(_SEAT_RE.fullmatch(value))
 
 
 def _run(command: list[str], timeout: float = 8.0) -> subprocess.CompletedProcess[str]:
@@ -172,8 +177,6 @@ def _discover_once(pactl: str) -> tuple[list[AudioOutput], str, bool]:
         if isinstance(raw, list) and not raw:
             return [], "PipeWire/Pulse está ativo, mas nenhuma saída de áudio foi publicada.", True
 
-    # Do not trust only JSON mode. Some pactl/PipeWire combinations accept the
-    # command but print non-JSON output or warnings. Plain pactl is stable.
     text_result = _run([pactl, "list", "sinks"])
     if text_result.returncode == 0:
         outputs = _parse_pactl_text(text_result.stdout)
@@ -221,8 +224,14 @@ def load_rules() -> list[AudioRule]:
             continue
         output = str(raw.get("output") or "")
         seat = str(raw.get("seat") or "")
-        if output and seat in {"seat-a", "seat-b", "unmanaged"}:
-            result.append(AudioRule(output=output, seat=seat, description=str(raw.get("description") or "")))
+        if output and _valid_audio_destination(seat):
+            result.append(
+                AudioRule(
+                    output=output,
+                    seat=seat,
+                    description=str(raw.get("description") or ""),
+                )
+            )
     return result
 
 
@@ -239,7 +248,7 @@ def save_rules_from_file(source: str) -> None:
         output = str(raw.get("output") or "").strip()
         seat = str(raw.get("seat") or "").strip()
         description = str(raw.get("description") or "").strip()
-        if not output or seat not in {"seat-a", "seat-b", "unmanaged"}:
+        if not output or not _valid_audio_destination(seat):
             raise ValueError("Saída/seat de áudio inválido.")
         if output in seen:
             raise ValueError(f"Saída de áudio duplicada: {output}")
@@ -249,7 +258,10 @@ def save_rules_from_file(source: str) -> None:
     AUDIO_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     tmp = AUDIO_CONFIG.with_name(f".{AUDIO_CONFIG.name}.tmp-{os.getpid()}")
     try:
-        tmp.write_text(json.dumps({"version": 1, "outputs": clean}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.write_text(
+            json.dumps({"version": 1, "outputs": clean}, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
         os.chmod(tmp, 0o644)
         tmp.replace(AUDIO_CONFIG)
     finally:
@@ -305,7 +317,11 @@ def apply_for_current_seat() -> None:
     except Exception:
         return
     logical = next(
-        (seat.name for seat in config.seats if seat.enabled and runtime_seat_name(seat) == runtime_seat),
+        (
+            seat.name
+            for seat in config.seats
+            if seat.enabled and runtime_seat_name(seat) == runtime_seat
+        ),
         "",
     )
     if not logical:
