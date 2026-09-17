@@ -102,7 +102,6 @@ Description=Multi Seat Arch automatic boot
 Requires=multi-user.target
 After=multi-user.target systemd-user-sessions.service
 Wants=systemd-user-sessions.service
-PartOf={TARGET_NAME}
 IgnoreOnIsolate=yes
 ConditionPathExists={CONFIG_PATH}
 
