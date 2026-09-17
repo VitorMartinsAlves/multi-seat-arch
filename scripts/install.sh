@@ -18,16 +18,23 @@ sudo pacman -S --needed --noconfirm \
   pcmanfm-qt qterminal xfce4-terminal
 
 # exp23 enabled the boot hook directly from multi-user.target while the normal
-# graphical.target transaction was still pending. That lets the host SDDM race
-# the multiseat login managers for the same GPU and can leave both displays
-# black. Disable/remove only that exact legacy unit during upgrade. The user can
-# re-enable autostart after installation; exp24 creates a dedicated boot target.
+# graphical.target transaction was still pending. Disable/remove only that exact
+# legacy unit during upgrade. exp24+ uses a dedicated boot target.
 LEGACY_AUTOSTART=/etc/systemd/system/multi-seat-arch-autostart.service
 if [[ -f "$LEGACY_AUTOSTART" ]] && grep -Fxq 'WantedBy=multi-user.target' "$LEGACY_AUTOSTART"; then
   echo "Desabilitando início automático legado da exp23 antes da migração..."
   sudo systemctl disable multi-seat-arch-autostart.service >/dev/null 2>&1 || true
   sudo rm -f "$LEGACY_AUTOSTART"
   sudo systemctl daemon-reload
+fi
+
+# Remember whether a safe exp24+ boot setup was already enabled. After the new
+# Python package is installed we regenerate its unit files so watchdog/recovery
+# improvements are applied without asking the user to toggle autostart off/on.
+autostart_was_enabled=0
+if systemctl is-enabled --quiet multi-seat-arch-autostart.service 2>/dev/null || \
+   [[ "$(systemctl get-default 2>/dev/null || true)" == "multi-seat-arch.target" ]]; then
+  autostart_was_enabled=1
 fi
 
 sudo bash scripts/configure-userns.sh "$USER"
@@ -105,6 +112,16 @@ EOF
 fi
 
 sudo python -m pip install --break-system-packages --disable-pip-version-check .
+
+if (( autostart_was_enabled )); then
+  helper=$(command -v multi-seat-arch || true)
+  if [[ -n "$helper" ]]; then
+    echo "Atualizando unidades de boot/recovery do Multi Seat Arch..."
+    sudo "$helper" autostart-enable
+  else
+    echo "Aviso: multi-seat-arch não encontrado após instalação; unidades de autostart não foram regeneradas." >&2
+  fi
+fi
 
 sudo install -Dm644 desktop/multi-seat-arch.desktop /usr/share/applications/multi-seat-arch.desktop
 
