@@ -9,9 +9,6 @@ from . import autostart
 from . import backend
 from . import config as cfg
 from . import dynamic_login
-from .runtime_patch import install as install_runtime_patch
-
-install_runtime_patch(backend)
 
 activate_now = backend.activate_now
 doctor = backend.doctor
@@ -74,6 +71,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("_restore-now", help=argparse.SUPPRESS)
     sub.add_parser("_watch-inputs", help=argparse.SUPPRESS)
     sub.add_parser("_boot", help=argparse.SUPPRESS)
+    sub.add_parser("_boot-recover", help=argparse.SUPPRESS)
     return parser
 
 
@@ -144,14 +142,7 @@ def _set_compositor(path: str) -> None:
 
 
 def _prepare_dynamic_login(config) -> None:
-    """Validate the Plasma/Atrium login path before scheduling activation.
-
-    Activation runs later in a transient systemd unit. If this validation were
-    deferred until that unit, the GUI would report that startup was scheduled
-    and then appear to do nothing when Atrium/KWin prerequisites were missing.
-    Fail here while pkexec is still attached to the GUI so the real error is
-    shown immediately.
-    """
+    """Validate the Plasma/Atrium login path before scheduling activation."""
     if not Path(PLASMA_EXPERIMENTAL).is_file():
         raise RuntimeError(
             "KWin experimental não está instalado. Rode: bash scripts/build-kwin-plasma.sh"
@@ -173,8 +164,9 @@ def _enable_autostart() -> None:
 def _boot_multiseat() -> None:
     """Boot-time entry point used by the persistent systemd service.
 
-    This runs before the host display manager. If activation fails, backend's
-    existing rollback returns the machine to graphical.target/normal SDDM.
+    Recovery is intentionally external to this process. Any exception, crash or
+    systemd timeout marks the service failed and triggers the independent
+    `multi-seat-arch-autostart-recovery.service` via OnFailure=.
     """
     before_activation()
     config = cfg.load()
@@ -184,6 +176,17 @@ def _boot_multiseat() -> None:
     _prepare_dynamic_login(config)
     cfg.save(config)
     activate_now(config)
+
+
+def _recover_failed_boot() -> None:
+    """Make both the current boot and the following boot safe after failure."""
+    # First make the next reboot safe even if graphical recovery below fails.
+    autostart.disable_after_boot_failure()
+    before_restore()
+    # The fully patched restore path resets inputs/audio/user managers and
+    # restarts the normal display manager. It is safe when activation only made
+    # partial progress because cleanup operations are intentionally idempotent.
+    restore_now()
 
 
 def main() -> int:
@@ -323,6 +326,10 @@ def main() -> int:
 
         if args.cmd == "_boot":
             _boot_multiseat()
+            return 0
+
+        if args.cmd == "_boot-recover":
+            _recover_failed_boot()
             return 0
 
         return 1
