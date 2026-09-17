@@ -215,29 +215,79 @@ class DynamicMainWindow(MainWindow):
         self.audio_rules[name] = AudioRule(output=name, seat=seat, description=description)
         self.status.setText("Alteração de áudio pendente. Salve ou reinicie o multiseat para aplicar.")
 
+    @staticmethod
+    def _saved_output_as_disconnected(rule: AudioRule) -> AudioOutput:
+        name = rule.output.lower()
+        bus = "bluetooth" if "bluez" in name else "—"
+        return AudioOutput(
+            name=rule.output,
+            description=rule.description or rule.output,
+            state="DISCONNECTED",
+            bus=bus,
+        )
+
     def _render_audio_table(self) -> None:
         self.audio_row_for_output.clear()
-        self.audio_table.setRowCount(len(self.audio_outputs))
-        for row, output in enumerate(self.audio_outputs):
-            self.audio_row_for_output[output.name] = row
+        present = {output.name for output in self.audio_outputs}
+        disconnected = [
+            self._saved_output_as_disconnected(rule)
+            for name, rule in self.audio_rules.items()
+            if name not in present
+        ]
+        rows: list[tuple[AudioOutput, bool]] = [
+            (output, True) for output in self.audio_outputs
+        ] + [(output, False) for output in disconnected]
+
+        self.audio_table.setRowCount(len(rows))
+        for row, (output, connected) in enumerate(rows):
+            if connected:
+                self.audio_row_for_output[output.name] = row
+
             name = QTableWidgetItem(output.description)
-            name.setToolTip(output.name)
+            name.setToolTip(
+                output.name
+                if connected
+                else "Saída de áudio desconectada. A atribuição será mantida e reaplicada quando ela voltar."
+            )
             bus = QTableWidgetItem(output.bus or "áudio")
-            state_label = "EM USO" if output.state == "RUNNING" else output.state.lower()
+            state_label = (
+                "EM USO"
+                if output.state == "RUNNING"
+                else "desconectado"
+                if not connected
+                else output.state.lower()
+            )
             state = QTableWidgetItem(state_label)
             for col, item in enumerate((name, bus, state)):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if not connected:
+                    item.setForeground(QColor("gray"))
                 self.audio_table.setItem(row, col, item)
 
-            self.audio_table.setCellWidget(row, 3, self._audio_destination_combo(output))
+            destination = self._audio_destination_combo(output)
+            if not connected:
+                destination.setToolTip(
+                    "A saída está desconectada, mas sua atribuição continua salva."
+                )
+            self.audio_table.setCellWidget(row, 3, destination)
+
             test = QPushButton("▶ Testar")
-            test.setToolTip("Toca um bip somente nesta saída para identificar qual dispositivo físico é.")
-            test.clicked.connect(lambda _checked=False, out=output: self.test_audio_output(out))
+            test.setToolTip(
+                "Toca um bip somente nesta saída para identificar qual dispositivo físico é."
+                if connected
+                else "A saída precisa estar conectada para ser testada."
+            )
+            test.setEnabled(connected)
+            if connected:
+                test.clicked.connect(lambda _checked=False, out=output: self.test_audio_output(out))
             self.audio_table.setCellWidget(row, 4, test)
             self.audio_table.setRowHeight(row, 40)
-            self._paint_audio_activity(row, output.state == "RUNNING")
+            self._paint_audio_activity(row, connected and output.state == "RUNNING")
 
-        self.audio_status.setText(f"{len(self.audio_outputs)} saída(s) detectada(s)")
+        detected = len(self.audio_outputs)
+        saved_offline = len(disconnected)
+        suffix = f" • {saved_offline} desconectada(s)" if saved_offline else ""
+        self.audio_status.setText(f"{detected} saída(s) detectada(s){suffix}")
         if self.audio_error:
             self.audio_error_label.setText("Diagnóstico: " + self.audio_error)
             self.audio_error_label.show()
