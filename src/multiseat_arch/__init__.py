@@ -1,4 +1,4 @@
-__version__ = "0.8.0-exp20"
+__version__ = "0.8.0-exp21"
 
 # Keep target-host compatibility fixes active regardless of which entry point
 # imports the package (CLI, GUI helpers, hotplug watcher or tests).
@@ -16,6 +16,7 @@ from .runtime_patch_v10 import install as _install_runtime_patch_v10
 from .runtime_patch_v11 import install as _install_runtime_patch_v11
 from .runtime_patch_v12 import install as _install_runtime_patch_v12
 from .runtime_patch_v13 import install as _install_runtime_patch_v13
+from .runtime_patch_v14 import install as _install_runtime_patch_v14
 
 _install_runtime_patch(_backend)
 _install_runtime_patch_v2(_backend)
@@ -30,3 +31,4 @@ _install_runtime_patch_v10(_backend)
 _install_runtime_patch_v11(_backend)
 _install_runtime_patch_v12(_backend)
 _install_runtime_patch_v13(_backend)
+_install_runtime_patch_v14(_backend)
