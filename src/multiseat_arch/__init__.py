@@ -1,4 +1,4 @@
-__version__ = "0.8.0-exp24"
+__version__ = "0.8.0-exp25"
 
 # Keep target-host compatibility fixes active regardless of which entry point
 # imports the package. The established layer order now has one canonical
