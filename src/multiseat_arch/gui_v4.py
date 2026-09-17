@@ -3,8 +3,9 @@ from __future__ import annotations
 import getpass
 import json
 
-from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QMessageBox, QPushButton
+from PyQt6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QMessageBox, QPushButton
 
+from . import autostart
 from . import config as cfg
 from .device_ui import is_system_device, is_useful_input
 from .gui import MODE_DISABLED, MODE_MIXED, MODE_SHARED, MODE_UNMANAGED
@@ -25,6 +26,16 @@ class MainWindow(PreviousMainWindow):
         hint.setStyleSheet("color: palette(mid)")
         controls.addWidget(hint)
         controls.addStretch(1)
+
+        self.autostart_checkbox = QCheckBox("Iniciar multiseat junto com o sistema")
+        self.autostart_checkbox.setToolTip(
+            "Ao ligar o PC, cada monitor abre diretamente sua própria tela de login, "
+            "sem passar primeiro pelo desktop normal."
+        )
+        self.autostart_checkbox.setChecked(autostart.enabled())
+        self.autostart_checkbox.toggled.connect(self._autostart_toggled)
+        controls.addWidget(self.autostart_checkbox)
+
         add_button = QPushButton("+ Adicionar seat")
         add_button.clicked.connect(self.add_seat)
         controls.addWidget(add_button)
@@ -33,6 +44,41 @@ class MainWindow(PreviousMainWindow):
         controls.addWidget(self.remove_seat_button)
         self.centralWidget().layout().insertLayout(3, controls)
         self._update_remove_button()
+
+    def _set_autostart_checkbox(self, value: bool) -> None:
+        self.autostart_checkbox.blockSignals(True)
+        self.autostart_checkbox.setChecked(value)
+        self.autostart_checkbox.blockSignals(False)
+
+    def _autostart_toggled(self, checked: bool) -> None:
+        if checked:
+            if not self.validate_ui(show_message=False):
+                QMessageBox.warning(
+                    self,
+                    "Início automático",
+                    "Corrija a configuração antes de ativar o início automático.",
+                )
+                self._set_autostart_checkbox(False)
+                return
+            # Autostart must boot the configuration currently visible in the GUI,
+            # not an older /etc copy. Persist seats/peripherals/audio first.
+            if not self._apply_config_action("apply") or not self._save_audio_rules():
+                self._set_autostart_checkbox(False)
+                return
+            if not self._pkexec("autostart-enable"):
+                self._set_autostart_checkbox(False)
+                return
+            self.status.setText(
+                "Início automático ativado. No próximo boot, cada seat abrirá direto na tela de login."
+            )
+            return
+
+        if not self._pkexec("autostart-disable"):
+            self._set_autostart_checkbox(True)
+            return
+        self.status.setText(
+            "Início automático desativado. No próximo boot, o PC iniciará no desktop normal."
+        )
 
     @staticmethod
     def _seat_suffix(index: int) -> str:
