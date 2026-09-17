@@ -8,6 +8,8 @@ from pathlib import Path
 
 UNIT_NAME = "multi-seat-arch-autostart.service"
 UNIT_PATH = Path("/etc/systemd/system") / UNIT_NAME
+RECOVERY_UNIT_NAME = "multi-seat-arch-autostart-recovery.service"
+RECOVERY_UNIT_PATH = Path("/etc/systemd/system") / RECOVERY_UNIT_NAME
 TARGET_NAME = "multi-seat-arch.target"
 TARGET_PATH = Path("/etc/systemd/system") / TARGET_NAME
 CONFIG_PATH = Path("/etc/multi-seat-arch/config.json")
@@ -76,34 +78,26 @@ def _write_atomic(path: Path, text: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def enable() -> None:
-    if os.geteuid() != 0:
-        raise PermissionError("Execute como root.")
-    if not CONFIG_PATH.is_file():
-        raise RuntimeError("Salve uma configuração válida antes de ativar o início automático.")
-
-    helper = _helper_binary()
-
-    # Do not race the normal graphical boot. exp23 attached the autostart unit to
-    # multi-user.target while graphical.target was still part of the same boot
-    # transaction. SDDM could therefore start after MSA had acquired the DRM
-    # leases and take both outputs back as one desktop. A dedicated default
-    # target makes the two boot modes mutually exclusive from PID 1's point of
-    # view: normal graphical boot OR Multi Seat Arch boot.
-    target = f"""[Unit]
+def _target_unit_text() -> str:
+    return """[Unit]
 Description=Multi Seat Arch boot mode
 Requires=multi-user.target
 After=multi-user.target systemd-user-sessions.service
 Wants=systemd-user-sessions.service
 AllowIsolate=yes
 """
-    unit = f"""[Unit]
+
+
+def _autostart_unit_text(helper: str) -> str:
+    return f"""[Unit]
 Description=Multi Seat Arch automatic boot
 Requires=multi-user.target
 After=multi-user.target systemd-user-sessions.service
 Wants=systemd-user-sessions.service
 IgnoreOnIsolate=yes
 ConditionPathExists={CONFIG_PATH}
+OnFailure={RECOVERY_UNIT_NAME}
+OnFailureJobMode=replace
 
 [Service]
 Type=oneshot
@@ -115,12 +109,40 @@ TimeoutStartSec=240
 WantedBy={TARGET_NAME}
 """
 
+
+def _recovery_unit_text(helper: str) -> str:
+    # Deliberately separate from the boot process. If _boot crashes or systemd
+    # kills it on TimeoutStartSec, this unit still gets a fresh process that can
+    # restore the host display manager and make the following boot safe.
+    return f"""[Unit]
+Description=Recover normal desktop after failed Multi Seat Arch boot
+After={UNIT_NAME}
+
+[Service]
+Type=oneshot
+ExecStart={helper} _boot-recover
+TimeoutStartSec=180
+"""
+
+
+def enable() -> None:
+    if os.geteuid() != 0:
+        raise PermissionError("Execute como root.")
+    if not CONFIG_PATH.is_file():
+        raise RuntimeError("Salve uma configuração válida antes de ativar o início automático.")
+
+    helper = _helper_binary()
+
+    # Do not race the normal graphical boot. A dedicated default target makes
+    # normal graphical boot and Multi Seat Arch boot mutually exclusive from
+    # PID 1's point of view.
     current_default = _default_target()
     if current_default != TARGET_NAME and not PREVIOUS_TARGET_PATH.exists():
         _write_atomic(PREVIOUS_TARGET_PATH, current_default + "\n")
 
-    _write_atomic(TARGET_PATH, target)
-    _write_atomic(UNIT_PATH, unit)
+    _write_atomic(TARGET_PATH, _target_unit_text())
+    _write_atomic(UNIT_PATH, _autostart_unit_text(helper))
+    _write_atomic(RECOVERY_UNIT_PATH, _recovery_unit_text(helper))
     FAILURE_MARKER.unlink(missing_ok=True)
 
     _run(["systemctl", "daemon-reload"])
@@ -139,12 +161,14 @@ def disable() -> None:
 
     try:
         UNIT_PATH.unlink(missing_ok=True)
+        RECOVERY_UNIT_PATH.unlink(missing_ok=True)
         TARGET_PATH.unlink(missing_ok=True)
         PREVIOUS_TARGET_PATH.unlink(missing_ok=True)
         FAILURE_MARKER.unlink(missing_ok=True)
     finally:
         _run(["systemctl", "daemon-reload"], check=False)
         _run(["systemctl", "reset-failed", UNIT_NAME], check=False)
+        _run(["systemctl", "reset-failed", RECOVERY_UNIT_NAME], check=False)
 
 
 def disable_after_boot_failure() -> None:
@@ -160,8 +184,9 @@ def disable_after_boot_failure() -> None:
     except OSError:
         pass
 
-    # Keep the files for diagnostics, but make the next boot normal. The user
-    # can explicitly enable autostart again after fixing the reported problem.
+    # Keep service/target files for diagnostics but make the next boot normal.
+    # Recovery of the *current* boot is intentionally handled by the separate
+    # recovery unit so it cannot be killed together with the failed boot helper.
     _run(["systemctl", "disable", UNIT_NAME], check=False)
     _run(["systemctl", "set-default", _saved_previous_target()], check=False)
     _run(["systemctl", "daemon-reload"], check=False)
