@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from multiseat_arch import backend
+from multiseat_arch import backend, runtime_patch_v8, runtime_patch_v10
 from multiseat_arch.model import Config, DeviceRule, InputDevice, Seat
 
 
@@ -32,6 +32,7 @@ class BackendTests(unittest.TestCase):
         with (
             patch.object(backend.os, "geteuid", return_value=0),
             patch.object(backend, "validate", return_value=[]),
+            patch.object(runtime_patch_v10, "_arm"),
             patch.object(backend, "_schedule_helper") as schedule,
         ):
             backend.start(config)
@@ -41,11 +42,13 @@ class BackendTests(unittest.TestCase):
         with (
             patch.object(backend.os, "geteuid", return_value=0),
             patch.object(backend, "validate", return_value=["bad"]),
+            patch.object(runtime_patch_v10, "_arm") as arm,
             patch.object(backend, "_schedule_helper") as schedule,
         ):
             with self.assertRaises(RuntimeError):
                 backend.start(Config())
             schedule.assert_not_called()
+            arm.assert_not_called()
 
     def test_write_runtime_rules_contains_physical_and_virtual_routes(self):
         config = self._config()
@@ -112,6 +115,9 @@ class BackendTests(unittest.TestCase):
             patch.object(backend.os, "geteuid", return_value=0),
             patch.object(backend, "validate", return_value=[]),
             patch.object(backend, "doctor", return_value=[backend.Check(True, "ok")]),
+            # Prevent the outer dynamic-login compatibility layer from trying
+            # to create /etc state before this test reaches the activation body.
+            patch.object(runtime_patch_v8.dynamic_login, "enabled", return_value=True),
             patch.object(backend, "stop_transient_units", side_effect=RuntimeError("boom")),
             patch.object(backend, "_rollback_after_failed_start") as rollback,
         ):
