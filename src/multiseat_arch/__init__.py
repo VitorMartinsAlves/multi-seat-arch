@@ -1,34 +1,9 @@
 __version__ = "0.8.0-exp24"
 
 # Keep target-host compatibility fixes active regardless of which entry point
-# imports the package (CLI, GUI helpers, hotplug watcher or tests).
+# imports the package. The established layer order now has one canonical
+# registration point so it can be consolidated safely over time.
 from . import backend as _backend
-from .runtime_patch import install as _install_runtime_patch
-from .runtime_patch_v2 import install as _install_runtime_patch_v2
-from .runtime_patch_v3 import install as _install_runtime_patch_v3
-from .runtime_patch_v4 import install as _install_runtime_patch_v4
-from .runtime_patch_v5 import install as _install_runtime_patch_v5
-from .runtime_patch_v6 import install as _install_runtime_patch_v6
-from .runtime_patch_v7 import install as _install_runtime_patch_v7
-from .runtime_patch_v8 import install as _install_runtime_patch_v8
-from .runtime_patch_v9 import install as _install_runtime_patch_v9
-from .runtime_patch_v10 import install as _install_runtime_patch_v10
-from .runtime_patch_v11 import install as _install_runtime_patch_v11
-from .runtime_patch_v12 import install as _install_runtime_patch_v12
-from .runtime_patch_v13 import install as _install_runtime_patch_v13
-from .runtime_patch_v14 import install as _install_runtime_patch_v14
+from .runtime_stack import install as _install_runtime_stack
 
-_install_runtime_patch(_backend)
-_install_runtime_patch_v2(_backend)
-_install_runtime_patch_v3(_backend)
-_install_runtime_patch_v4(_backend)
-_install_runtime_patch_v5(_backend)
-_install_runtime_patch_v6(_backend)
-_install_runtime_patch_v7(_backend)
-_install_runtime_patch_v8(_backend)
-_install_runtime_patch_v9(_backend)
-_install_runtime_patch_v10(_backend)
-_install_runtime_patch_v11(_backend)
-_install_runtime_patch_v12(_backend)
-_install_runtime_patch_v13(_backend)
-_install_runtime_patch_v14(_backend)
+_install_runtime_stack(_backend)
