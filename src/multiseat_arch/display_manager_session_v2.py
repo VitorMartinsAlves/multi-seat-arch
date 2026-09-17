@@ -162,21 +162,23 @@ def _restore_user_runtime(env: dict[str, str]) -> None:
 
 
 def greeter_main() -> int:
+    """Run the distribution's real KDE/SDDM greeter on this leased display.
+
+    Atrium remains the PAM/session backend because it understands our synthetic
+    connector seats and hands KWin the DRM lease. The SDDM greeter is only the
+    user-facing login UI; sddm_greeter_bridge translates its login request back
+    into Atrium's credential/result pipes.
+    """
     kwin: subprocess.Popen | None = None
-    child: subprocess.Popen | None = None
     try:
         kwin, env = _start_kwin(greeter=True)
-        greeter = next((path for path in base.ATRIUM_GREETER_CANDIDATES if Path(path).is_file()), None)
-        if greeter is None:
-            raise RuntimeError("atrium-gtk-greeter não encontrado.")
-        fds = base._passthrough_fds("CREDENTIALS_FD", "RESULT_FD")
-        child = subprocess.Popen([greeter], env=env, pass_fds=fds)
-        return child.wait()
+        from .sddm_greeter_bridge import run_sddm_greeter
+
+        return run_sddm_greeter(env)
     except Exception as exc:
-        print(f"multi-seat-arch login greeter: {exc}", file=sys.stderr)
+        print(f"multi-seat-arch KDE login greeter: {exc}", file=sys.stderr)
         return 1
     finally:
-        base._terminate(child)
         base._terminate(kwin)
 
 
