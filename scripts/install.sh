@@ -17,6 +17,19 @@ sudo pacman -S --needed --noconfirm \
   lxqt-session lxqt-wayland-session lxqt-panel lxqt-runner lxqt-config lxqt-policykit lxqt-themes \
   pcmanfm-qt qterminal xfce4-terminal
 
+# exp23 enabled the boot hook directly from multi-user.target while the normal
+# graphical.target transaction was still pending. That lets the host SDDM race
+# the multiseat login managers for the same GPU and can leave both displays
+# black. Disable/remove only that exact legacy unit during upgrade. The user can
+# re-enable autostart after installation; exp24 creates a dedicated boot target.
+LEGACY_AUTOSTART=/etc/systemd/system/multi-seat-arch-autostart.service
+if [[ -f "$LEGACY_AUTOSTART" ]] && grep -Fxq 'WantedBy=multi-user.target' "$LEGACY_AUTOSTART"; then
+  echo "Desabilitando início automático legado da exp23 antes da migração..."
+  sudo systemctl disable multi-seat-arch-autostart.service >/dev/null 2>&1 || true
+  sudo rm -f "$LEGACY_AUTOSTART"
+  sudo systemctl daemon-reload
+fi
+
 sudo bash scripts/configure-userns.sh "$USER"
 
 echo uinput | sudo tee /etc/modules-load.d/multi-seat-arch.conf >/dev/null
