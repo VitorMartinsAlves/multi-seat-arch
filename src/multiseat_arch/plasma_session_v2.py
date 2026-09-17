@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from .audio import apply_for_current_seat
+from .bluetooth_seat import clear_for_current_user, configure_for_current_seat
 from .plasma_session import main as plasma_main
 
 
@@ -28,6 +29,15 @@ def main() -> int:
     # in Kickoff and lets Discover resolve their desktop launchers.
     _ensure_flatpak_exports()
 
+    # BlueZ is system-wide, while every logged-in user runs its own WirePlumber.
+    # Configure ownership before touching the audio stack so a reconnected
+    # headset is claimed only by the logical seat selected in the GUI instead of
+    # whichever WirePlumber instance wins the reconnect race.
+    try:
+        configure_for_current_seat()
+    except Exception:
+        pass
+
     # Best-effort: PipeWire-Pulse may still be starting during very early login.
     # The first call normally succeeds; the Plasma session itself remains usable
     # even when no audio rule or audio service is available.
@@ -35,7 +45,16 @@ def main() -> int:
         apply_for_current_seat()
     except Exception:
         pass
-    return plasma_main()
+
+    try:
+        return plasma_main()
+    finally:
+        # Do not leave a transient per-seat WirePlumber policy behind when the
+        # custom session exits and the machine returns to a normal desktop.
+        try:
+            clear_for_current_user()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
