@@ -39,8 +39,54 @@ fi
 
 sudo bash scripts/configure-userns.sh "$USER"
 
-echo uinput | sudo tee /etc/modules-load.d/multi-seat-arch.conf >/dev/null
-sudo modprobe uinput
+# uinput can be provided either as a loadable module (=m) or built directly
+# into the running kernel (=y). CachyOS kernels may use the built-in form, in
+# which case `modprobe uinput` correctly reports "module not found" even though
+# /dev/uinput is already available. Only request module loading when a module
+# actually exists; accept the built-in kernel implementation as valid.
+uinput_builtin=0
+for kernel_config in /proc/config.gz "/boot/config-$(uname -r)"; do
+  if [[ ! -r "$kernel_config" ]]; then
+    continue
+  fi
+  if [[ "$kernel_config" == *.gz ]]; then
+    if zgrep -q '^CONFIG_INPUT_UINPUT=y$' "$kernel_config" 2>/dev/null; then
+      uinput_builtin=1
+      break
+    fi
+  elif grep -q '^CONFIG_INPUT_UINPUT=y$' "$kernel_config" 2>/dev/null; then
+    uinput_builtin=1
+    break
+  fi
+done
+
+if (( uinput_builtin )); then
+  echo "uinput está embutido no kernel; modprobe não é necessário."
+  sudo rm -f /etc/modules-load.d/multi-seat-arch.conf
+else
+  echo uinput | sudo tee /etc/modules-load.d/multi-seat-arch.conf >/dev/null
+  if ! sudo modprobe uinput; then
+    if [[ -e /dev/uinput ]]; then
+      echo "Aviso: modprobe uinput falhou, mas /dev/uinput já está disponível; continuando." >&2
+    else
+      echo "Falha: uinput não está embutido no kernel, o módulo não pôde ser carregado e /dev/uinput não existe." >&2
+      echo "Kernel atual: $(uname -r)" >&2
+      exit 8
+    fi
+  fi
+fi
+
+# On built-in kernels the device should normally be created by devtmpfs. Trigger
+# the misc subsystem once in case udev has not populated the node yet.
+if [[ ! -e /dev/uinput ]]; then
+  sudo udevadm trigger --subsystem-match=misc --action=add 2>/dev/null || true
+  sudo udevadm settle --timeout=3 2>/dev/null || true
+fi
+
+if [[ ! -e /dev/uinput ]]; then
+  echo "Falha: suporte uinput foi detectado/carregado, mas /dev/uinput não foi criado." >&2
+  exit 9
+fi
 
 sudo install -Dm644 udev/70-multi-seat-arch-input-monitor.rules /etc/udev/rules.d/70-multi-seat-arch-input-monitor.rules
 sudo install -Dm644 udev/72-multi-seat-arch-seat-master.rules /etc/udev/rules.d/72-multi-seat-arch-seat-master.rules
