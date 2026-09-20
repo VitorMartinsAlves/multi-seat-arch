@@ -186,6 +186,122 @@ def stable_device_key(
     return f"input-{digest}"
 
 
+def _input_function_identity(
+    syspath: str,
+    props: dict[str, str],
+) -> str:
+    """Fingerprint one evdev function inside a composite HID device.
+
+    Some gaming mice expose several event nodes with the same product name,
+    USB interface and udev path. Their input capabilities and HID collection
+    index remain distinct, so use those only when the legacy stable key
+    collides. This keeps existing keys unchanged for normal devices.
+    """
+    parent = Path(seat_assignable_syspath(syspath))
+    parts: list[str] = []
+
+    try:
+        phys = (parent / "phys").read_text(encoding="utf-8").strip()
+    except OSError:
+        phys = ""
+    match = re.search(r"/input(\d+)$", phys)
+    if match:
+        parts.append(f"collection:{match.group(1)}")
+
+    caps = parent / "capabilities"
+    for name in ("ev", "key", "rel", "abs", "msc", "sw", "led", "snd", "ff"):
+        try:
+            value = " ".join((caps / name).read_text(encoding="utf-8").split())
+        except OSError:
+            continue
+        if value:
+            parts.append(f"{name}:{value}")
+
+    for prop in (
+        "ID_INPUT_MOUSE",
+        "ID_INPUT_KEYBOARD",
+        "ID_INPUT_TOUCHPAD",
+        "ID_INPUT_JOYSTICK",
+        "ID_INPUT_KEY",
+        "ID_INPUT_SWITCH",
+    ):
+        if props.get(prop) == "1":
+            parts.append(prop)
+
+    return "|".join(parts)
+
+
+def _explicit_input_role_score(device: InputDevice, props: dict[str, str]) -> tuple[int, int]:
+    role_prop = {
+        "mouse": "ID_INPUT_MOUSE",
+        "keyboard": "ID_INPUT_KEYBOARD",
+        "touchpad": "ID_INPUT_TOUCHPAD",
+        "gamepad": "ID_INPUT_JOYSTICK",
+    }.get(device.kind, "")
+    exact = 1 if role_prop and props.get(role_prop) == "1" else 0
+    explicit = sum(
+        props.get(prop) == "1"
+        for prop in (
+            "ID_INPUT_MOUSE",
+            "ID_INPUT_KEYBOARD",
+            "ID_INPUT_TOUCHPAD",
+            "ID_INPUT_JOYSTICK",
+        )
+    )
+    return exact, explicit
+
+
+def _derived_collision_key(base_key: str, discriminator: str) -> str:
+    digest = hashlib.sha256(
+        f"{base_key}|function:{discriminator}".encode("utf-8", "replace")
+    ).hexdigest()[:24]
+    return f"input-{digest}"
+
+
+def _disambiguate_colliding_device_keys(
+    records: list[tuple[InputDevice, str, dict[str, str]]],
+) -> None:
+    """Make colliding composite-event keys unique without breaking old configs.
+
+    The most explicit event node keeps the legacy key. For a mouse, for example,
+    the node carrying ID_INPUT_MOUSE=1 wins. Existing configurations therefore
+    keep routing the primary function, while sibling event nodes receive stable
+    derived keys and can be migrated by the GUI as one physical group.
+    """
+    buckets: dict[str, list[tuple[InputDevice, str, dict[str, str]]]] = {}
+    for record in records:
+        buckets.setdefault(record[0].key, []).append(record)
+
+    for base_key, bucket in buckets.items():
+        if len(bucket) < 2:
+            continue
+
+        ordered = sorted(
+            bucket,
+            key=lambda item: (
+                -_explicit_input_role_score(item[0], item[2])[0],
+                -_explicit_input_role_score(item[0], item[2])[1],
+                _event_sort_key(item[0].event),
+            ),
+        )
+
+        used = {base_key}
+        # Keep the first/primary event on the old key for config compatibility.
+        for device, raw_syspath, props in ordered[1:]:
+            discriminator = _input_function_identity(raw_syspath, props)
+            if not discriminator:
+                discriminator = f"parent:{Path(seat_assignable_syspath(raw_syspath)).name}"
+
+            candidate = _derived_collision_key(base_key, discriminator)
+            if candidate in used:
+                # Last-resort uniqueness for truly indistinguishable kernel
+                # functions. This is intentionally only a collision fallback.
+                discriminator += f"|event:{Path(device.event).name}"
+                candidate = _derived_collision_key(base_key, discriminator)
+            device.key = candidate
+            used.add(candidate)
+
+
 def physical_group_key(syspath: str, props: dict[str, str]) -> str:
     """Build a UI-only identity for functions belonging to one physical device."""
     serial_short = props.get("ID_SERIAL_SHORT", "").strip()
@@ -212,6 +328,7 @@ def discover_inputs(
 ) -> list[InputDevice]:
     """Discover real input devices using udev/sysfs as the source of truth."""
     result: list[InputDevice] = []
+    records: list[tuple[InputDevice, str, dict[str, str]]] = []
     seen: set[str] = set()
     database = parse_udev_database(_run("udevadm", "info", "--export-db"))
 
@@ -252,19 +369,20 @@ def discover_inputs(
             continue
         seen.add(syspath)
 
-        result.append(
-            InputDevice(
-                name=name,
-                kind=kind,  # type: ignore[arg-type]
-                event=event,
-                syspath=syspath,
-                bus=props.get("ID_BUS", ""),
-                key=stable_device_key(name, kind, raw_syspath, props),
-                seat=props.get("ID_SEAT", "seat0") or "seat0",
-                group_key=physical_group_key(raw_syspath, props),
-            )
+        device = InputDevice(
+            name=name,
+            kind=kind,  # type: ignore[arg-type]
+            event=event,
+            syspath=syspath,
+            bus=props.get("ID_BUS", ""),
+            key=stable_device_key(name, kind, raw_syspath, props),
+            seat=props.get("ID_SEAT", "seat0") or "seat0",
+            group_key=physical_group_key(raw_syspath, props),
         )
+        result.append(device)
+        records.append((device, raw_syspath, props))
 
+    _disambiguate_colliding_device_keys(records)
     return result
 
 

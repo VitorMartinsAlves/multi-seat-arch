@@ -13,14 +13,80 @@ ENGINE_STAMP=/usr/local/share/multi-seat-arch/engine-version
 
 sudo pacman -S --needed --noconfirm \
   python python-pyqt6 python-pip python-evdev qt6-wayland \
-  libinput systemd pciutils polkit acl xorg-xwayland util-linux bubblewrap desktop-file-utils \
+  libinput systemd pciutils polkit acl xorg-xwayland util-linux bubblewrap desktop-file-utils libpulse sddm \
   lxqt-session lxqt-wayland-session lxqt-panel lxqt-runner lxqt-config lxqt-policykit lxqt-themes \
   pcmanfm-qt qterminal xfce4-terminal
 
+# exp23 enabled the boot hook directly from multi-user.target while the normal
+# graphical.target transaction was still pending. Disable/remove only that exact
+# legacy unit during upgrade. exp24+ uses a dedicated boot target.
+LEGACY_AUTOSTART=/etc/systemd/system/multi-seat-arch-autostart.service
+if [[ -f "$LEGACY_AUTOSTART" ]] && grep -Fxq 'WantedBy=multi-user.target' "$LEGACY_AUTOSTART"; then
+  echo "Desabilitando início automático legado da exp23 antes da migração..."
+  sudo systemctl disable multi-seat-arch-autostart.service >/dev/null 2>&1 || true
+  sudo rm -f "$LEGACY_AUTOSTART"
+  sudo systemctl daemon-reload
+fi
+
+# Remember whether a safe exp24+ boot setup was already enabled. After the new
+# Python package is installed we regenerate its unit files so watchdog/recovery
+# improvements are applied without asking the user to toggle autostart off/on.
+autostart_was_enabled=0
+if systemctl is-enabled --quiet multi-seat-arch-autostart.service 2>/dev/null || \
+   [[ "$(systemctl get-default 2>/dev/null || true)" == "multi-seat-arch.target" ]]; then
+  autostart_was_enabled=1
+fi
+
 sudo bash scripts/configure-userns.sh "$USER"
 
-echo uinput | sudo tee /etc/modules-load.d/multi-seat-arch.conf >/dev/null
-sudo modprobe uinput
+# uinput can be provided either as a loadable module (=m) or built directly
+# into the running kernel (=y). CachyOS kernels may use the built-in form, in
+# which case `modprobe uinput` correctly reports "module not found" even though
+# /dev/uinput is already available. Only request module loading when a module
+# actually exists; accept the built-in kernel implementation as valid.
+uinput_builtin=0
+for kernel_config in /proc/config.gz "/boot/config-$(uname -r)"; do
+  if [[ ! -r "$kernel_config" ]]; then
+    continue
+  fi
+  if [[ "$kernel_config" == *.gz ]]; then
+    if zgrep -q '^CONFIG_INPUT_UINPUT=y$' "$kernel_config" 2>/dev/null; then
+      uinput_builtin=1
+      break
+    fi
+  elif grep -q '^CONFIG_INPUT_UINPUT=y$' "$kernel_config" 2>/dev/null; then
+    uinput_builtin=1
+    break
+  fi
+done
+
+if (( uinput_builtin )); then
+  echo "uinput está embutido no kernel; modprobe não é necessário."
+  sudo rm -f /etc/modules-load.d/multi-seat-arch.conf
+else
+  echo uinput | sudo tee /etc/modules-load.d/multi-seat-arch.conf >/dev/null
+  if ! sudo modprobe uinput; then
+    if [[ -e /dev/uinput ]]; then
+      echo "Aviso: modprobe uinput falhou, mas /dev/uinput já está disponível; continuando." >&2
+    else
+      echo "Falha: uinput não está embutido no kernel, o módulo não pôde ser carregado e /dev/uinput não existe." >&2
+      echo "Kernel atual: $(uname -r)" >&2
+      exit 8
+    fi
+  fi
+fi
+
+# On built-in kernels the device should normally be created by devtmpfs. Trigger
+# the misc subsystem once in case udev has not populated the node yet.
+if [[ ! -e /dev/uinput ]]; then
+  sudo udevadm trigger --subsystem-match=misc --action=add 2>/dev/null || true
+  sudo udevadm settle --timeout=3 2>/dev/null || true
+fi
+
+if [[ ! -e /dev/uinput ]]; then
+  echo "Falha: suporte uinput foi detectado/carregado, mas /dev/uinput não foi criado." >&2
+  exit 9
+fi
 
 sudo install -Dm644 udev/70-multi-seat-arch-input-monitor.rules /etc/udev/rules.d/70-multi-seat-arch-input-monitor.rules
 sudo install -Dm644 udev/72-multi-seat-arch-seat-master.rules /etc/udev/rules.d/72-multi-seat-arch-seat-master.rules
@@ -58,10 +124,53 @@ if (( engine_needs_build )); then
   sudo bash scripts/build-engine.sh
 fi
 
+# KWin's own wrapper creates the XWayland display sockets/Xauthority and
+# publishes DISPLAY. fd 198 is explicitly inheritable before this launcher is
+# exec'd, so it remains available to the patched kwin_wayland child.
+KWIN_ROOT=/opt/multi-seat-arch/kwin-plasma/usr
+if [[ -x "$KWIN_ROOT/bin/kwin_wayland_wrapper" ]]; then
+  sudo tee /usr/local/bin/kwin-wayland-msa >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -e
+ROOT=/opt/multi-seat-arch/kwin-plasma/usr
+export PATH="$ROOT/bin:$PATH"
+export LD_LIBRARY_PATH="$ROOT/lib:${LD_LIBRARY_PATH:-}"
+if [[ -d "$ROOT/lib/qt6/plugins" ]]; then
+  export QT_PLUGIN_PATH="$ROOT/lib/qt6/plugins:${QT_PLUGIN_PATH:-}"
+fi
+exec "$ROOT/bin/kwin_wayland_wrapper" --xwayland "$@"
+EOF
+  sudo chmod 0755 /usr/local/bin/kwin-wayland-msa
+elif [[ -x "$KWIN_ROOT/bin/kwin_wayland" ]]; then
+  echo "Aviso: kwin_wayland_wrapper não está no build experimental; X11/Steam pode não funcionar." >&2
+  sudo tee /usr/local/bin/kwin-wayland-msa >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -e
+ROOT=/opt/multi-seat-arch/kwin-plasma/usr
+export PATH="$ROOT/bin:$PATH"
+export LD_LIBRARY_PATH="$ROOT/lib:${LD_LIBRARY_PATH:-}"
+if [[ -d "$ROOT/lib/qt6/plugins" ]]; then
+  export QT_PLUGIN_PATH="$ROOT/lib/qt6/plugins:${QT_PLUGIN_PATH:-}"
+fi
+exec "$ROOT/bin/kwin_wayland" --xwayland "$@"
+EOF
+  sudo chmod 0755 /usr/local/bin/kwin-wayland-msa
+fi
+
 sudo python -m pip install --break-system-packages --disable-pip-version-check .
+
+if (( autostart_was_enabled )); then
+  helper=$(command -v multi-seat-arch || true)
+  if [[ -n "$helper" ]]; then
+    echo "Atualizando unidades de boot/recovery do Multi Seat Arch..."
+    sudo "$helper" autostart-enable
+  else
+    echo "Aviso: multi-seat-arch não encontrado após instalação; unidades de autostart não foram regeneradas." >&2
+  fi
+fi
 
 sudo install -Dm644 desktop/multi-seat-arch.desktop /usr/share/applications/multi-seat-arch.desktop
 
-echo "Instalado. O Multi Seat Arch não força mais tema visual; LXQt volta a controlar aparência, ícones e cores."
+echo "Instalado. O Multi Seat Arch usa o greeter SDDM/KDE real nos seats multiseat."
 echo "Abra 'Multi Seat Arch' no menu ou rode: multi-seat-arch-gui"
 multi-seat-arch doctor || true
