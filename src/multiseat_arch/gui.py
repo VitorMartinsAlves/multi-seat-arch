@@ -441,6 +441,33 @@ class MainWindow(QMainWindow):
 
             row = 0
             for group in visible_groups:
+                # Migration for old configs that stored only one rule when
+                # several evdev functions accidentally shared the same key.
+                # If the physical group has exactly one managed destination,
+                # inherit it for newly disambiguated sibling functions.
+                existing_rules = [
+                    self.rules.get(device.key)
+                    for device in group.devices
+                    if self.rules.get(device.key) is not None
+                ]
+                managed_choices = {
+                    (rule.mode, rule.seat)
+                    for rule in existing_rules
+                    if rule is not None and rule.mode != MODE_UNMANAGED
+                }
+                missing_devices = [
+                    device for device in group.devices if device.key not in self.rules
+                ]
+                if missing_devices and len(managed_choices) == 1:
+                    mode, seat = next(iter(managed_choices))
+                    for device in missing_devices:
+                        self.rules[device.key] = DeviceRule(
+                            key=device.key,
+                            mode=mode,  # type: ignore[arg-type]
+                            seat=seat,
+                            name=device.name,
+                        )
+
                 for device in group.devices:
                     rule = self.rules.get(device.key)
                     if rule is None:
