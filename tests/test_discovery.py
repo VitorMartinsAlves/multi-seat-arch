@@ -1,6 +1,7 @@
 import unittest
 
 from multiseat_arch.discovery import (
+    _disambiguate_colliding_device_keys,
     _kind_from_props,
     connector_lease_name,
     parse_libinput,
@@ -10,6 +11,7 @@ from multiseat_arch.discovery import (
     seat_assignable_syspath,
     stable_device_key,
 )
+from multiseat_arch.model import InputDevice
 
 
 SAMPLE = """Device:           AT Translated Set 2 keyboard
@@ -162,6 +164,51 @@ class DiscoveryTests(unittest.TestCase):
             {"ID_PATH": "usb-port-b"},
         )
         self.assertNotEqual(key_a, key_b)
+
+    def test_same_interface_composite_events_get_unique_keys_and_keep_primary_legacy_key(self):
+        legacy = "input-aaaaaaaaaaaaaaaaaaaaaaaa"
+        records = [
+            (
+                InputDevice(
+                    name="Corsair CORSAIR HARPOON RGB PRO Gaming Mouse",
+                    kind="mouse",
+                    event="/dev/input/event16",
+                    syspath="/sys/devices/hid/input/input17",
+                    key=legacy,
+                ),
+                "/sys/devices/hid/input/input17/event16",
+                {"ID_INPUT": "1", "ID_INPUT_MOUSE": "1", "ID_USB_INTERFACE_NUM": "00"},
+            ),
+            (
+                InputDevice(
+                    name="Corsair CORSAIR HARPOON RGB PRO Gaming Mouse",
+                    kind="mouse",
+                    event="/dev/input/event17",
+                    syspath="/sys/devices/hid/input/input18",
+                    key=legacy,
+                ),
+                "/sys/devices/hid/input/input18/event17",
+                {"ID_INPUT": "1", "ID_USB_INTERFACE_NUM": "00"},
+            ),
+            (
+                InputDevice(
+                    name="Corsair CORSAIR HARPOON RGB PRO Gaming Mouse",
+                    kind="mouse",
+                    event="/dev/input/event18",
+                    syspath="/sys/devices/hid/input/input19",
+                    key=legacy,
+                ),
+                "/sys/devices/hid/input/input19/event18",
+                {"ID_INPUT": "1", "ID_USB_INTERFACE_NUM": "00"},
+            ),
+        ]
+
+        _disambiguate_colliding_device_keys(records)
+
+        keys = [record[0].key for record in records]
+        self.assertEqual(keys[0], legacy)
+        self.assertEqual(len(set(keys)), 3)
+        self.assertTrue(all(key.startswith("input-") for key in keys))
 
     def test_gamepad_detection(self):
         self.assertEqual(
